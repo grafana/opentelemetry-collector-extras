@@ -1,0 +1,9 @@
+type: partialtracesampler
+
+status:
+  class: processor
+  stability:
+    development: [traces]
+  distributions: []
+  codeowners:
+    active: []

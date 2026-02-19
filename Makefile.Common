@@ -1,0 +1,20 @@
+SHELL = /bin/bash
+
+# SRC_ROOT is the top-level directory of the repository.
+SRC_ROOT := $(shell git rev-parse --show-toplevel)
+
+TOOLS_MOD_DIR := $(SRC_ROOT)/internal/tools
+
+MDATAGEN := $(TOOLS_MOD_DIR)/mdatagen
+
+.PHONY: mdatagen
+mdatagen:
+	go tool -modfile $(TOOLS_MOD_DIR)/go.mod mdatagen metadata.yaml
+
+.PHONY: generate
+generate:
+	go generate ./...
+
+.PHONY: test
+test:
+	go test ./...
