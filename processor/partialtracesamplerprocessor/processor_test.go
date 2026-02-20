@@ -34,7 +34,6 @@ func newTestTraces(spans int) ptrace.Traces {
 	return td
 }
 
-
 func TestDefaultZeroDropsAll(t *testing.T) {
 	sink := new(consumertest.TracesSink)
 	factory := NewFactory()
@@ -455,6 +454,281 @@ func countSpansInSink(sink *consumertest.TracesSink) int {
 		total += t.SpanCount()
 	}
 	return total
+}
+
+func TestGhostSpanConversion(t *testing.T) {
+	// Create a fully populated span and convert it to a ghost span.
+	td := ptrace.NewTraces()
+	rs := td.ResourceSpans().AppendEmpty()
+	rs.Resource().Attributes().PutStr("service.name", "test-svc")
+	ss := rs.ScopeSpans().AppendEmpty()
+	span := ss.Spans().AppendEmpty()
+
+	traceID := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	spanID := [8]byte{1, 2, 3, 4, 5, 6, 7, 8}
+	parentSpanID := [8]byte{8, 7, 6, 5, 4, 3, 2, 1}
+
+	span.SetTraceID(pcommon.TraceID(traceID))
+	span.SetSpanID(pcommon.SpanID(spanID))
+	span.SetParentSpanID(pcommon.SpanID(parentSpanID))
+	span.SetName("original-name")
+	span.Attributes().PutStr("http.method", "GET")
+	span.Attributes().PutInt("http.status_code", 200)
+	span.Events().AppendEmpty().SetName("event1")
+	span.Links().AppendEmpty().SetTraceID([16]byte{99})
+	span.Status().SetCode(ptrace.StatusCodeError)
+	span.Status().SetMessage("something failed")
+	span.SetStartTimestamp(1000)
+	span.SetEndTimestamp(2000)
+	span.SetKind(ptrace.SpanKindServer)
+	span.SetFlags(1)
+	span.SetDroppedAttributesCount(5)
+	span.SetDroppedEventsCount(3)
+	span.SetDroppedLinksCount(2)
+	span.TraceState().FromRaw("key=value")
+
+	convertToGhostSpan(span)
+
+	// Structural IDs preserved.
+	assert.Equal(t, pcommon.TraceID(traceID), span.TraceID())
+	assert.Equal(t, pcommon.SpanID(spanID), span.SpanID())
+	assert.Equal(t, pcommon.SpanID(parentSpanID), span.ParentSpanID())
+
+	// Timestamps and kinds are useful still.
+	assert.Equal(t, pcommon.Timestamp(1000), span.StartTimestamp())
+	assert.Equal(t, pcommon.Timestamp(2000), span.EndTimestamp())
+	assert.Equal(t, ptrace.SpanKindServer, span.Kind())
+	assert.Equal(t, uint32(1), span.Flags())
+
+	// Name and attributes.
+	assert.Equal(t, "unsampled", span.Name())
+	assert.Equal(t, 1, span.Attributes().Len())
+	v, ok := span.Attributes().Get(ghostSpanAttributeKey)
+	assert.True(t, ok)
+	assert.True(t, v.Bool())
+
+	// Cleared fields.
+	assert.Equal(t, 0, span.Events().Len())
+	assert.Equal(t, 0, span.Links().Len())
+	assert.Equal(t, ptrace.StatusCodeUnset, span.Status().Code())
+	assert.Equal(t, "", span.Status().Message())
+	assert.Equal(t, uint32(0), span.DroppedAttributesCount())
+	assert.Equal(t, uint32(0), span.DroppedEventsCount())
+	assert.Equal(t, uint32(0), span.DroppedLinksCount())
+	assert.Equal(t, "", span.TraceState().AsRaw())
+}
+
+func TestGhostSpanAtIntermediateRate(t *testing.T) {
+	// Default 0%, rule at 100% for attributes["important"]=="yes".
+	// Non-matching spans: effective=0%, max=100%. All should become ghosts.
+	sink := new(consumertest.TracesSink)
+	factory := NewFactory()
+	cfg := &Config{
+		DefaultSamplingPercentage: 0,
+		GhostSpans:                true,
+		Rules: []RuleConfig{
+			{SamplingPercentage: 100, Condition: `attributes["important"] == "yes"`},
+		},
+	}
+
+	proc, err := factory.CreateTraces(context.Background(), processortest.NewNopSettings(factory.Type()), cfg, sink)
+	require.NoError(t, err)
+
+	td := newTestTraces(10)
+	err = proc.ConsumeTraces(context.Background(), td)
+	require.NoError(t, err)
+
+	require.Len(t, sink.AllTraces(), 1)
+	got := sink.AllTraces()[0]
+	assert.Equal(t, 10, got.SpanCount())
+
+	// All spans should be ghosts.
+	spans := got.ResourceSpans().At(0).ScopeSpans().At(0).Spans()
+	for i := 0; i < spans.Len(); i++ {
+		s := spans.At(i)
+		assert.Equal(t, "unsampled", s.Name())
+		v, ok := s.Attributes().Get(ghostSpanAttributeKey)
+		assert.True(t, ok)
+		assert.True(t, v.Bool())
+	}
+}
+
+func TestGhostSpanPreservesTraceStructure(t *testing.T) {
+	sink := new(consumertest.TracesSink)
+	factory := NewFactory()
+	cfg := &Config{
+		DefaultSamplingPercentage: 0,
+		GhostSpans:                true,
+		Rules: []RuleConfig{
+			{SamplingPercentage: 100, Condition: `attributes["important"] == "yes"`},
+		},
+	}
+
+	proc, err := factory.CreateTraces(context.Background(), processortest.NewNopSettings(factory.Type()), cfg, sink)
+	require.NoError(t, err)
+
+	traceID := [16]byte{0xAA, 0xBB, 0xCC, 0xDD}
+	spanID := [8]byte{1, 2, 3, 4, 5, 6, 7, 8}
+	parentSpanID := [8]byte{8, 7, 6, 5, 4, 3, 2, 1}
+
+	td := ptrace.NewTraces()
+	rs := td.ResourceSpans().AppendEmpty()
+	span := rs.ScopeSpans().AppendEmpty().Spans().AppendEmpty()
+	span.SetName("original")
+	span.SetTraceID(pcommon.TraceID(traceID))
+	span.SetSpanID(pcommon.SpanID(spanID))
+	span.SetParentSpanID(pcommon.SpanID(parentSpanID))
+
+	err = proc.ConsumeTraces(context.Background(), td)
+	require.NoError(t, err)
+
+	require.Len(t, sink.AllTraces(), 1)
+	got := sink.AllTraces()[0].ResourceSpans().At(0).ScopeSpans().At(0).Spans().At(0)
+	assert.Equal(t, pcommon.TraceID(traceID), got.TraceID())
+	assert.Equal(t, pcommon.SpanID(spanID), got.SpanID())
+	assert.Equal(t, pcommon.SpanID(parentSpanID), got.ParentSpanID())
+}
+
+func TestNoGhostWhenMaxThresholdEqualsEffective(t *testing.T) {
+	// Default 10%, no rules. Effective == max, so no ghosts possible.
+	sink := new(consumertest.TracesSink)
+	factory := NewFactory()
+	cfg := &Config{
+		DefaultSamplingPercentage: 10,
+		GhostSpans:                true,
+	}
+
+	proc, err := factory.CreateTraces(context.Background(), processortest.NewNopSettings(factory.Type()), cfg, sink)
+	require.NoError(t, err)
+
+	const numTraces = 10000
+	for i := 0; i < numTraces; i++ {
+		td := ptrace.NewTraces()
+		rs := td.ResourceSpans().AppendEmpty()
+		span := rs.ScopeSpans().AppendEmpty().Spans().AppendEmpty()
+		span.SetName("no-ghost-test")
+		var traceID [16]byte
+		traceID[0] = byte(i >> 24)
+		traceID[1] = byte(i >> 16)
+		traceID[2] = byte(i >> 8)
+		traceID[3] = byte(i)
+		span.SetTraceID(pcommon.TraceID(traceID))
+		span.SetSpanID([8]byte{1})
+		_ = proc.ConsumeTraces(context.Background(), td)
+	}
+
+	// All kept spans should be real spans, not ghosts.
+	for _, tr := range sink.AllTraces() {
+		for ri := 0; ri < tr.ResourceSpans().Len(); ri++ {
+			for si := 0; si < tr.ResourceSpans().At(ri).ScopeSpans().Len(); si++ {
+				spans := tr.ResourceSpans().At(ri).ScopeSpans().At(si).Spans()
+				for spi := 0; spi < spans.Len(); spi++ {
+					assert.NotEqual(t, "unsampled", spans.At(spi).Name(), "should not produce ghost spans when max == effective")
+				}
+			}
+		}
+	}
+}
+
+func TestNoGhostWhenAllZero(t *testing.T) {
+	// Default 0%, no rules. Max threshold is 0, everything drops.
+	sink := new(consumertest.TracesSink)
+	factory := NewFactory()
+	cfg := &Config{
+		DefaultSamplingPercentage: 0,
+		GhostSpans:                true,
+	}
+
+	proc, err := factory.CreateTraces(context.Background(), processortest.NewNopSettings(factory.Type()), cfg, sink)
+	require.NoError(t, err)
+
+	td := newTestTraces(10)
+	err = proc.ConsumeTraces(context.Background(), td)
+	require.NoError(t, err)
+	assert.Empty(t, sink.AllTraces(), "0%% with no rules should drop everything even with ghost_spans enabled")
+}
+
+func TestStatisticalGhostRate(t *testing.T) {
+	// Default 10%, rule at 50% for name=="special".
+	// Non-matching spans: effective=10%, max=50%.
+	// Expected: ~10% kept, ~40% ghost, ~50% dropped.
+	sink := new(consumertest.TracesSink)
+	factory := NewFactory()
+	cfg := &Config{
+		DefaultSamplingPercentage: 10,
+		GhostSpans:                true,
+		Rules: []RuleConfig{
+			{SamplingPercentage: 50, Condition: `name == "special"`},
+		},
+	}
+
+	proc, err := factory.CreateTraces(context.Background(), processortest.NewNopSettings(factory.Type()), cfg, sink)
+	require.NoError(t, err)
+
+	const numTraces = 10000
+	for i := 0; i < numTraces; i++ {
+		td := ptrace.NewTraces()
+		rs := td.ResourceSpans().AppendEmpty()
+		span := rs.ScopeSpans().AppendEmpty().Spans().AppendEmpty()
+		span.SetName("normal") // Does NOT match rule, uses default 10%.
+		var traceID [16]byte
+		traceID[0] = byte(i >> 24)
+		traceID[1] = byte(i >> 16)
+		traceID[2] = byte(i >> 8)
+		traceID[3] = byte(i)
+		span.SetTraceID(pcommon.TraceID(traceID))
+		span.SetSpanID([8]byte{1})
+		_ = proc.ConsumeTraces(context.Background(), td)
+	}
+
+	kept := 0
+	ghosts := 0
+	for _, tr := range sink.AllTraces() {
+		for ri := 0; ri < tr.ResourceSpans().Len(); ri++ {
+			for si := 0; si < tr.ResourceSpans().At(ri).ScopeSpans().Len(); si++ {
+				spans := tr.ResourceSpans().At(ri).ScopeSpans().At(si).Spans()
+				for spi := 0; spi < spans.Len(); spi++ {
+					if spans.At(spi).Name() == "unsampled" {
+						ghosts++
+					} else {
+						kept++
+					}
+				}
+			}
+		}
+	}
+	dropped := numTraces - kept - ghosts
+
+	keepRatio := float64(kept) / float64(numTraces)
+	ghostRatio := float64(ghosts) / float64(numTraces)
+	dropRatio := float64(dropped) / float64(numTraces)
+
+	assert.InDelta(t, 0.10, keepRatio, 0.05, "expected ~10%% kept, got %f", keepRatio)
+	assert.InDelta(t, 0.40, ghostRatio, 0.05, "expected ~40%% ghost, got %f", ghostRatio)
+	assert.InDelta(t, 0.50, dropRatio, 0.05, "expected ~50%% dropped, got %f", dropRatio)
+}
+
+func TestGhostSpansDisabledByDefault(t *testing.T) {
+	// Default config (ghost_spans not set). Verify no ghosts even with rules.
+	sink := new(consumertest.TracesSink)
+	factory := NewFactory()
+	cfg := &Config{
+		DefaultSamplingPercentage: 0,
+		// GhostSpans defaults to false.
+		Rules: []RuleConfig{
+			{SamplingPercentage: 100, Condition: `attributes["important"] == "yes"`},
+		},
+	}
+
+	proc, err := factory.CreateTraces(context.Background(), processortest.NewNopSettings(factory.Type()), cfg, sink)
+	require.NoError(t, err)
+
+	td := newTestTraces(10) // No span has attributes["important"]=="yes"
+	err = proc.ConsumeTraces(context.Background(), td)
+	require.NoError(t, err)
+
+	// With ghost_spans=false, default 0%, no matching rules: all spans should be dropped.
+	assert.Empty(t, sink.AllTraces(), "ghost_spans disabled should not produce ghost spans")
 }
 
 func TestStatisticalMultipleRates(t *testing.T) {

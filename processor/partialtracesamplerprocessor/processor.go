@@ -29,6 +29,19 @@ const (
 	percentageScaleFactor = numHashBuckets / 100.0
 )
 
+type sampleDecision int
+
+const (
+	decisionDrop sampleDecision = iota
+	decisionGhost
+	decisionKeep
+)
+
+const (
+	ghostSpanName         = "unsampled"
+	ghostSpanAttributeKey = "grafana.partial_trace.ghost"
+)
+
 type compiledRule struct {
 	condition       ottl.ConditionSequence[*ottlspan.TransformContext]
 	scaledThreshold uint32
@@ -39,6 +52,8 @@ type partialTraceSampler struct {
 	rules                  []compiledRule
 	defaultScaledThreshold uint32
 	hashSeed               uint32
+	ghostSpans             bool
+	maxScaledThreshold     uint32
 }
 
 func newPartialTraceSampler(
@@ -66,11 +81,25 @@ func newPartialTraceSampler(
 		})
 	}
 
+	defaultScaledThreshold := uint32(float64(cfg.DefaultSamplingPercentage) * percentageScaleFactor)
+
+	var maxScaledThreshold uint32
+	if cfg.GhostSpans {
+		maxScaledThreshold = defaultScaledThreshold
+		for _, r := range rules {
+			if r.scaledThreshold > maxScaledThreshold {
+				maxScaledThreshold = r.scaledThreshold
+			}
+		}
+	}
+
 	sampler := &partialTraceSampler{
 		logger:                 set.Logger,
 		rules:                  rules,
-		defaultScaledThreshold: uint32(float64(cfg.DefaultSamplingPercentage) * percentageScaleFactor),
+		defaultScaledThreshold: defaultScaledThreshold,
 		hashSeed:               cfg.HashSeed,
+		ghostSpans:             cfg.GhostSpans,
+		maxScaledThreshold:     maxScaledThreshold,
 	}
 
 	return processorhelper.NewTraces(ctx, set, cfg, nextConsumer, sampler.processTraces,
@@ -92,7 +121,15 @@ func (p *partialTraceSampler) processTraces(ctx context.Context, td ptrace.Trace
 	td.ResourceSpans().RemoveIf(func(rs ptrace.ResourceSpans) bool {
 		rs.ScopeSpans().RemoveIf(func(ss ptrace.ScopeSpans) bool {
 			ss.Spans().RemoveIf(func(span ptrace.Span) bool {
-				return !p.shouldSample(ctx, rs, ss, span)
+				switch p.decideSampling(ctx, rs, ss, span) {
+				case decisionKeep:
+					return false
+				case decisionGhost:
+					convertToGhostSpan(span)
+					return false
+				default:
+					return true
+				}
 			})
 			return ss.Spans().Len() == 0
 		})
@@ -104,7 +141,7 @@ func (p *partialTraceSampler) processTraces(ctx context.Context, td ptrace.Trace
 	return td, nil
 }
 
-func (p *partialTraceSampler) shouldSample(ctx context.Context, rs ptrace.ResourceSpans, ss ptrace.ScopeSpans, span ptrace.Span) bool {
+func (p *partialTraceSampler) decideSampling(ctx context.Context, rs ptrace.ResourceSpans, ss ptrace.ScopeSpans, span ptrace.Span) sampleDecision {
 	effectiveThreshold := p.defaultScaledThreshold
 
 	for i := range p.rules {
@@ -121,13 +158,34 @@ func (p *partialTraceSampler) shouldSample(ctx context.Context, rs ptrace.Resour
 	}
 
 	if effectiveThreshold >= numHashBuckets {
-		return true
-	}
-	if effectiveThreshold == 0 {
-		return false
+		return decisionKeep
 	}
 
 	traceID := span.TraceID()
 	hash := computeHash(traceID[:], p.hashSeed) & bitMaskHashBuckets
-	return hash < effectiveThreshold
+
+	if hash < effectiveThreshold {
+		return decisionKeep
+	}
+	if p.ghostSpans && hash < p.maxScaledThreshold {
+		return decisionGhost
+	}
+	return decisionDrop
+}
+
+func convertToGhostSpan(span ptrace.Span) {
+	// Preserve: TraceID, SpanID, ParentSpanID (already set on the span)
+	span.SetName(ghostSpanName)
+
+	span.Attributes().Clear()
+	span.Attributes().PutBool(ghostSpanAttributeKey, true)
+
+	span.Events().RemoveIf(func(ptrace.SpanEvent) bool { return true })
+	span.Links().RemoveIf(func(ptrace.SpanLink) bool { return true })
+	span.Status().SetCode(ptrace.StatusCodeUnset)
+	span.Status().SetMessage("")
+	span.SetDroppedAttributesCount(0)
+	span.SetDroppedEventsCount(0)
+	span.SetDroppedLinksCount(0)
+	span.TraceState().FromRaw("")
 }

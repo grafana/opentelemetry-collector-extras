@@ -44,6 +44,11 @@ processors:
     # Default: 0.
     hash_seed: 42
 
+    # When true, spans that fall between their effective sampling rate and the
+    # highest configured rate are emitted as ghost spans instead of being
+    # dropped. See the Ghost Spans section below. Default: false.
+    ghost_spans: true
+
     # Optional list of rules evaluated in order. Each rule has an OTTL
     # condition and a sampling percentage. When multiple rules match a span,
     # the highest sampling_percentage wins.
@@ -62,6 +67,7 @@ processors:
 |-------|------|---------|-------------|
 | `default_sampling_percentage` | float32 | `0` | Sampling percentage for spans that do not match any rule (0-100). |
 | `hash_seed` | uint32 | `0` | Seed for the FNV hash. Use the same value across instances for consistent sampling. |
+| `ghost_spans` | bool | `false` | Enable ghost spans to preserve trace structure for dropped spans. |
 | `rules` | list | `[]` | Ordered list of sampling rules. |
 | `rules[].sampling_percentage` | float32 | | Sampling percentage if the condition matches (0-100). |
 | `rules[].condition` | string | | [OTTL condition](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/pkg/ottl) evaluated against each span. Has access to span attributes, resource attributes, span name, and other span fields. |
@@ -82,3 +88,47 @@ processors:
 Because sampling decisions are based on the trace ID hash, all spans belonging
 to the same trace will receive the same decision (assuming they match the same
 rules), even across multiple collector instances using the same `hash_seed`.
+
+## Ghost spans
+
+When `ghost_spans` is enabled, spans that would normally be dropped can instead
+be emitted as lightweight "ghost" spans that preserve trace topology. This
+allows downstream systems to reconstruct the structure of a trace even when
+most spans have been sampled away.
+
+### When ghost spans are produced
+
+Ghost spans are produced for spans whose trace ID hash falls between their
+effective sampling threshold and the maximum configured threshold across all
+rules. The sampling decision becomes three-valued:
+
+| Hash range | Outcome |
+|---|---|
+| `hash < effectiveThreshold` | **Keep** — span passes through unchanged |
+| `effectiveThreshold <= hash < maxConfiguredThreshold` | **Ghost** — span stripped to skeleton |
+| `hash >= maxConfiguredThreshold` | **Drop** — span removed entirely |
+
+When no rules are configured (or all rules have the same percentage as the
+default), the effective and maximum thresholds are equal, so no ghost spans are
+produced and behavior is identical to having `ghost_spans` disabled.
+
+### What ghost spans contain
+
+A ghost span retains only the minimum information needed to represent a node in
+the trace tree:
+
+- **Preserved:** Trace ID, Span ID, Parent Span ID, start and end timestamps, kind, flags
+- **Set:** Name is `"unsampled"`, attribute `grafana.partial_trace.ghost = true`
+- **Cleared:** All other attributes, events, links, status, dropped counts, trace state
+
+### Example
+
+With `default_sampling_percentage: 10` and a rule at `sampling_percentage: 50`
+for error spans, non-error spans will be:
+
+- **Kept** (~10%) — full span data preserved
+- **Ghost** (~40%) — skeleton span with trace structure only
+- **Dropped** (~50%) — removed entirely
+
+Error spans matching the 50% rule will be kept at 50% and ghosted/dropped at
+higher hash values according to the same logic.
