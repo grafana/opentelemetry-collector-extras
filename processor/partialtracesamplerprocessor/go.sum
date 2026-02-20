@@ -74,6 +74,8 @@ github.com/open-telemetry/opentelemetry-collector-contrib/internal/coreinternal 
 github.com/open-telemetry/opentelemetry-collector-contrib/internal/coreinternal v0.146.0/go.mod h1:+3Bt6ZyvHjlviCDgvvn8COjIdHRn88+lpGQSgE51uvs=
 github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl v0.146.0 h1:zSrdWmss3z6Krcoxk3bnkD71Dq5e8nJOks7P4A9vaUI=
 github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl v0.146.0/go.mod h1:GfltwkXSARjxETh09zS92hZxV+OWtGwWhtKNrpuY5S0=
+github.com/open-telemetry/opentelemetry-collector-contrib/pkg/sampling v0.146.0 h1:pk+xSBAXwaaK46fDTYa6mJLPwYJjILDAIErr/jPu6cg=
+github.com/open-telemetry/opentelemetry-collector-contrib/pkg/sampling v0.146.0/go.mod h1:4knrbY/GH44/yi7S19cPyfJcEFoSBGDRFOslaWUVO5c=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/rogpeppe/go-internal v1.14.1 h1:UQB4HGPB6osV0SQTLymcB4TgvyWu6ZyliaW0tI/otEQ=
