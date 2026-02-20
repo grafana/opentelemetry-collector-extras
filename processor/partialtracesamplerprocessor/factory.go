@@ -20,9 +20,7 @@ func NewFactory() processor.Factory {
 }
 
 func createDefaultConfig() component.Config {
-	return &Config{
-		SamplingPrecision: 4,
-	}
+	return &Config{}
 }
 
 func createTracesProcessor(
