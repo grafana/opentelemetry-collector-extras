@@ -21,6 +21,7 @@ type RuleConfig struct {
 type Config struct {
 	DefaultSamplingPercentage float32      `mapstructure:"default_sampling_percentage"`
 	HashSeed                  uint32       `mapstructure:"hash_seed"`
+	GhostSpans                bool         `mapstructure:"ghost_spans"`
 	Rules                     []RuleConfig `mapstructure:"rules"`
 }
 
