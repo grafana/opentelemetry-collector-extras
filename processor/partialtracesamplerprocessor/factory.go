@@ -1,3 +1,10 @@
+// Copyright The OpenTelemetry Authors
+// Copyright Grafana Labs
+// SPDX-License-Identifier: Apache-2.0
+
+// Original source: github.com/open-telemetry/opentelemetry-collector-contrib/processor/probabilisticsamplerprocessor
+// Modified to support partial trace sampling with per-span OTTL-based rules.
+
 package partialtracesamplerprocessor
 
 import (
@@ -29,5 +36,5 @@ func createTracesProcessor(
 	cfg component.Config,
 	nextConsumer consumer.Traces,
 ) (processor.Traces, error) {
-	return newPartialTraceSampler(set, cfg.(*Config), nextConsumer), nil
+	return newPartialTraceSampler(ctx, set, cfg.(*Config), nextConsumer)
 }
