@@ -1,0 +1,15 @@
+opentelemetry-collector-extras
+Copyright Grafana Labs
+
+This product contains code derived from opentelemetry-collector-contrib,
+which is licensed under the Apache License, Version 2.0.
+
+  Copyright The OpenTelemetry Authors
+  https://github.com/open-telemetry/opentelemetry-collector-contrib
+  Licensed under the Apache License, Version 2.0
+
+The following components contain modifications of opentelemetry-collector-contrib code:
+
+  processor/partialtracesamplerprocessor
+    Derived from: processor/probabilisticsamplerprocessor
+    Modified to support partial trace sampling with per-span OTTL-based rules.
