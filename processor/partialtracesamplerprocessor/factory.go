@@ -29,5 +29,5 @@ func createTracesProcessor(
 	cfg component.Config,
 	nextConsumer consumer.Traces,
 ) (processor.Traces, error) {
-	return newPartialTraceSampler(set, cfg.(*Config), nextConsumer), nil
+	return newPartialTraceSampler(ctx, set, cfg.(*Config), nextConsumer)
 }

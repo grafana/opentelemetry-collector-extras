@@ -7,3 +7,7 @@ status:
   distributions: []
   codeowners:
     active: []
+
+tests:
+  config:
+    default_sampling_percentage: 100

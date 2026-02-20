@@ -1,2 +1,9 @@
 processors:
   partialtracesampler:
+    default_sampling_percentage: 10
+    hash_seed: 42
+    rules:
+      - sampling_percentage: 100
+        condition: 'attributes["http.status_code"] >= 500'
+      - sampling_percentage: 50
+        condition: 'name == "important-operation"'
