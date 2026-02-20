@@ -176,7 +176,7 @@ func (p *partialTraceSampler) shouldSampleEqualizing(span ptrace.Span, pct float
 		if existingTh, has := w3c.OTelValue().TValueThreshold(); has {
 			if err := p.consistencyCheck(rnd, existingTh); err != nil {
 				p.logger.Debug("inconsistent tracestate", zap.Error(err))
-				// Clear the inconsistent threshold and proceed with ours.
+				return !p.failClosed
 			} else if sampling.ThresholdGreater(existingTh, myThreshold) {
 				threshold = existingTh
 			}
@@ -204,10 +204,9 @@ func (p *partialTraceSampler) shouldSampleProportional(span ptrace.Span, pct flo
 		if existingTh, has := w3c.OTelValue().TValueThreshold(); has {
 			if err := p.consistencyCheck(rnd, existingTh); err != nil {
 				p.logger.Debug("inconsistent tracestate", zap.Error(err))
-				// Proceed with default incoming probability.
-			} else {
-				incomingProb = existingTh.Probability()
+				return !p.failClosed
 			}
+			incomingProb = existingTh.Probability()
 		}
 	}
 
