@@ -1,3 +1,10 @@
+// Copyright The OpenTelemetry Authors
+// Copyright Grafana Labs
+// SPDX-License-Identifier: Apache-2.0
+
+// Original source: github.com/open-telemetry/opentelemetry-collector-contrib/processor/probabilisticsamplerprocessor
+// Modified to support partial trace sampling with per-span OTTL-based rules.
+
 package partialtracesamplerprocessor
 
 import (
