@@ -13,9 +13,9 @@ import (
 	"go.opentelemetry.io/collector/processor/processorhelper"
 	"go.uber.org/zap"
 
-	"github.com/open-telemetry/opentelemetry-collector-contrib/internal/filter/filterottl"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl/contexts/ottlspan"
+
 	"github.com/grafana/opentelemetry-collector-extras/processor/spanpruningprocessor/internal/metadata"
 )
 
@@ -82,9 +82,9 @@ func createTracesProcessor(
 	// Compile OTTL conditions if configured
 	var conditions *ottl.ConditionSequence[*ottlspan.TransformContext]
 	if len(pCfg.Conditions) > 0 {
-		conditions, err = filterottl.NewBoolExprForSpan(
+		conditions, err = newBoolExprForSpan(
 			pCfg.Conditions,
-			filterottl.StandardSpanFuncs(),
+			standardSpanFuncs(),
 			ottl.PropagateError,
 			set.TelemetrySettings,
 		)
