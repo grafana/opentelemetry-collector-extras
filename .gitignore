@@ -1,0 +1,11 @@
+# Test artifacts
+coverage.out
+*.test
+
+# Crush/AI tooling
+.crush/
+
+# IDE
+.idea/
+.vscode/
+*.swp

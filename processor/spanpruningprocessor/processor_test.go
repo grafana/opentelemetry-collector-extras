@@ -21,10 +21,10 @@ import (
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
 
-	"github.com/open-telemetry/opentelemetry-collector-contrib/internal/filter/filterottl"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl"
-	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/spanpruningprocessor/internal/metadata"
-	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/spanpruningprocessor/internal/metadatatest"
+
+	"github.com/grafana/opentelemetry-collector-extras/processor/spanpruningprocessor/internal/metadata"
+	"github.com/grafana/opentelemetry-collector-extras/processor/spanpruningprocessor/internal/metadatatest"
 )
 
 func TestNewTraces(t *testing.T) {
@@ -2822,9 +2822,9 @@ func TestOTTLConditions_EvalErrorLogging(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create the conditions sequence with PropagateError to ensure errors are returned
-	conditions, err := filterottl.NewBoolExprForSpan(
+	conditions, err := newBoolExprForSpan(
 		cfg.Conditions,
-		filterottl.StandardSpanFuncs(),
+		standardSpanFuncs(),
 		ottl.PropagateError,
 		settings.TelemetrySettings,
 	)

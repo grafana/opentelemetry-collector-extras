@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-package spanpruningprocessor // import "github.com/open-telemetry/opentelemetry-collector-contrib/processor/spanpruningprocessor"
+package spanpruningprocessor // import "github.com/grafana/opentelemetry-collector-extras/processor/spanpruningprocessor"
 
 import (
 	"cmp"

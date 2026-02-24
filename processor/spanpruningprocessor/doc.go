@@ -8,4 +8,4 @@
 // Leaf spans are spans that are never referenced as a parent by another span.
 // When all children of a parent are aggregated, the parent can also be
 // aggregated, preserving the trace structure while reducing volume.
-package spanpruningprocessor // import "github.com/open-telemetry/opentelemetry-collector-contrib/processor/spanpruningprocessor"
+package spanpruningprocessor // import "github.com/grafana/opentelemetry-collector-extras/processor/spanpruningprocessor"

@@ -13,7 +13,7 @@ import (
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/confmap/confmaptest"
 
-	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/spanpruningprocessor/internal/metadata"
+	"github.com/grafana/opentelemetry-collector-extras/processor/spanpruningprocessor/internal/metadata"
 )
 
 var defaultHistogramBuckets = []time.Duration{
