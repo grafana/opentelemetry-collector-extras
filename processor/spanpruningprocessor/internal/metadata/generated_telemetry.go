@@ -13,11 +13,11 @@ import (
 )
 
 func Meter(settings component.TelemetrySettings) metric.Meter {
-	return settings.MeterProvider.Meter("github.com/open-telemetry/opentelemetry-collector-contrib/processor/spanpruningprocessor")
+	return settings.MeterProvider.Meter("github.com/grafana/opentelemetry-collector-extras/processor/spanpruningprocessor")
 }
 
 func Tracer(settings component.TelemetrySettings) trace.Tracer {
-	return settings.TracerProvider.Tracer("github.com/open-telemetry/opentelemetry-collector-contrib/processor/spanpruningprocessor")
+	return settings.TracerProvider.Tracer("github.com/grafana/opentelemetry-collector-extras/processor/spanpruningprocessor")
 }
 
 // TelemetryBuilder provides an interface for components to report telemetry

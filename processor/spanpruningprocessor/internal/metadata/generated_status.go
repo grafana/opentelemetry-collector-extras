@@ -8,7 +8,7 @@ import (
 
 var (
 	Type      = component.MustNewType("spanpruning")
-	ScopeName = "github.com/open-telemetry/opentelemetry-collector-contrib/processor/spanpruningprocessor"
+	ScopeName = "github.com/grafana/opentelemetry-collector-extras/processor/spanpruningprocessor"
 )
 
 const (
