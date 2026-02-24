@@ -1,0 +1,27 @@
+spanpruning:
+  group_by_attributes:
+    - "db.operation"
+  min_spans_to_aggregate: 5
+  aggregation_attribute_prefix: "aggregation."
+
+spanpruning/custom:
+  group_by_attributes:
+    - "db.operation"
+    - "db.name"
+  min_spans_to_aggregate: 3
+  aggregation_attribute_prefix: "batch."
+
+spanpruning/conditional:
+  conditions:
+    - 'resource.attributes["service.name"] == "loki-query-engine"'
+  group_by_attributes:
+    - "db.operation"
+  min_spans_to_aggregate: 5
+
+spanpruning/multi_conditions:
+  conditions:
+    - 'resource.attributes["service.name"] == "loki-query-engine"'
+    - 'attributes["db.system"] == "postgresql"'
+  group_by_attributes:
+    - "db.operation"
+  min_spans_to_aggregate: 3
