@@ -504,8 +504,8 @@ func TestGhostSpanConversion(t *testing.T) {
 	assert.Equal(t, ptrace.SpanKindServer, span.Kind())
 	assert.Equal(t, uint32(1), span.Flags())
 
-	// Name and attributes.
-	assert.Equal(t, "unsampled", span.Name())
+	// Name preserved for server spans, attributes replaced with ghost marker.
+	assert.Equal(t, "original-name", span.Name())
 	assert.Equal(t, 1, span.Attributes().Len())
 	v, ok := span.Attributes().Get(ghostSpanAttributeKey)
 	assert.True(t, ok)
