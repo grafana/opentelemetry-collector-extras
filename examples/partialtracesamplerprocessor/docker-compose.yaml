@@ -1,0 +1,73 @@
+services:
+  tempo:
+    image: grafana/tempo:2.9.1
+    user: "0"
+    command: ["-target=all", "-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./tempo-config.yaml:/etc/tempo.yaml
+      - tempo-data:/var/tempo
+    ports:
+      - "3200:3200"
+      - "9095:9095"
+
+  collector:
+    build:
+      context: ../..
+      dockerfile: examples/partialtracesamplerprocessor/Dockerfile.collector
+    command: ["--config=/etc/otelcol/otelcol-config.yaml"]
+    volumes:
+      - ./otelcol-config.yaml:/etc/otelcol/otelcol-config.yaml:ro
+    ports:
+      - "4317:4317"
+    depends_on:
+      - tempo
+
+  telemetrygen:
+    image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.146.0
+    command:
+      - traces
+      - --otlp-endpoint=collector:4317
+      - --otlp-insecure
+      - --rate=1
+      - --traces=9999999
+      - --child-spans=5
+      - --service=frontend
+      - --telemetry-attributes=http.status_code=200
+      - --telemetry-attributes=http.method="GET"
+      - --telemetry-attributes=http.route="/api/users"
+    depends_on:
+      - collector
+
+  telemetrygen-errors:
+    image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.146.0
+    command:
+      - traces
+      - --otlp-endpoint=collector:4317
+      - --otlp-insecure
+      - --rate=1
+      - --traces=9999999
+      - --child-spans=3
+      - --service=backend
+      - --status-code=Error
+      - --telemetry-attributes=http.status_code=500
+      - --telemetry-attributes=http.method="POST"
+      - --telemetry-attributes=http.route="/api/orders"
+    depends_on:
+      - collector
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+      - GF_FEATURE_TOGGLES_ENABLE=traceqlEditor traceQLStreaming metricsSummary
+    depends_on:
+      - tempo
+
+volumes:
+  tempo-data:

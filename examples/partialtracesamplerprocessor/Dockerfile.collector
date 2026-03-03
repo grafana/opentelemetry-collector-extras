@@ -1,0 +1,21 @@
+FROM golang:1.25 AS builder
+
+ARG OCB_VERSION=0.146.1
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+
+RUN curl -fsSL -o /usr/local/bin/ocb \
+    "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/cmd%2Fbuilder%2Fv${OCB_VERSION}/ocb_${OCB_VERSION}_${TARGETOS}_${TARGETARCH}" && \
+    chmod +x /usr/local/bin/ocb
+
+WORKDIR /build
+
+COPY processor/partialtracesamplerprocessor processor/partialtracesamplerprocessor
+COPY examples/partialtracesamplerprocessor/otelcol-builder.yaml otelcol-builder.yaml
+
+RUN ocb --config=otelcol-builder.yaml
+
+FROM gcr.io/distroless/base-debian12
+
+COPY --from=builder /build/otelcol-custom/otelcol-custom /otelcol
+ENTRYPOINT ["/otelcol"]
