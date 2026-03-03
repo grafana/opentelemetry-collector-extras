@@ -12,10 +12,12 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash/fnv"
+	"strings"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl/contexts/ottlspan"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl/ottlfuncs"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/sampling"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/processor"
@@ -121,11 +123,13 @@ func (p *partialTraceSampler) processTraces(ctx context.Context, td ptrace.Trace
 	td.ResourceSpans().RemoveIf(func(rs ptrace.ResourceSpans) bool {
 		rs.ScopeSpans().RemoveIf(func(ss ptrace.ScopeSpans) bool {
 			ss.Spans().RemoveIf(func(span ptrace.Span) bool {
-				switch p.decideSampling(ctx, rs, ss, span) {
+				decision, scaledThreshold := p.decideSampling(ctx, rs, ss, span)
+				switch decision {
 				case decisionKeep:
+					setTraceStateThreshold(span, scaledThresholdToSamplingThreshold(scaledThreshold))
 					return false
 				case decisionGhost:
-					convertToGhostSpan(span)
+					convertToGhostSpan(span, scaledThresholdToSamplingThreshold(scaledThreshold))
 					return false
 				default:
 					return true
@@ -141,7 +145,7 @@ func (p *partialTraceSampler) processTraces(ctx context.Context, td ptrace.Trace
 	return td, nil
 }
 
-func (p *partialTraceSampler) decideSampling(ctx context.Context, rs ptrace.ResourceSpans, ss ptrace.ScopeSpans, span ptrace.Span) sampleDecision {
+func (p *partialTraceSampler) decideSampling(ctx context.Context, rs ptrace.ResourceSpans, ss ptrace.ScopeSpans, span ptrace.Span) (sampleDecision, uint32) {
 	effectiveThreshold := p.defaultScaledThreshold
 
 	for i := range p.rules {
@@ -158,22 +162,22 @@ func (p *partialTraceSampler) decideSampling(ctx context.Context, rs ptrace.Reso
 	}
 
 	if effectiveThreshold >= numHashBuckets {
-		return decisionKeep
+		return decisionKeep, numHashBuckets
 	}
 
 	traceID := span.TraceID()
 	hash := computeHash(traceID[:], p.hashSeed) & bitMaskHashBuckets
 
 	if hash < effectiveThreshold {
-		return decisionKeep
+		return decisionKeep, effectiveThreshold
 	}
 	if p.ghostSpans && hash < p.maxScaledThreshold {
-		return decisionGhost
+		return decisionGhost, p.maxScaledThreshold
 	}
-	return decisionDrop
+	return decisionDrop, 0
 }
 
-func convertToGhostSpan(span ptrace.Span) {
+func convertToGhostSpan(span ptrace.Span, th sampling.Threshold) {
 	// Preserve: TraceID, SpanID, ParentSpanID (already set on the span)
 	span.SetName(ghostSpanName)
 
@@ -187,5 +191,36 @@ func convertToGhostSpan(span ptrace.Span) {
 	span.SetDroppedAttributesCount(0)
 	span.SetDroppedEventsCount(0)
 	span.SetDroppedLinksCount(0)
-	span.TraceState().FromRaw("")
+
+	// Set trace state with sampling threshold (ghost spans don't preserve original tracestate).
+	w3c, _ := sampling.NewW3CTraceState("")
+	_ = w3c.OTelValue().UpdateTValueWithSampling(th)
+	var buf strings.Builder
+	_ = w3c.Serialize(&buf)
+	span.TraceState().FromRaw(buf.String())
+}
+
+func setTraceStateThreshold(span ptrace.Span, th sampling.Threshold) {
+	w3c, err := sampling.NewW3CTraceState(span.TraceState().AsRaw())
+	if err != nil {
+		// If tracestate is unparseable, start fresh.
+		w3c, _ = sampling.NewW3CTraceState("")
+	}
+	_ = w3c.OTelValue().UpdateTValueWithSampling(th)
+	var buf strings.Builder
+	_ = w3c.Serialize(&buf)
+	span.TraceState().FromRaw(buf.String())
+}
+
+func scaledThresholdToSamplingThreshold(scaled uint32) sampling.Threshold {
+	if scaled >= numHashBuckets {
+		return sampling.AlwaysSampleThreshold
+	}
+	prob := float64(scaled) / float64(numHashBuckets)
+	th, err := sampling.ProbabilityToThreshold(prob)
+	if err != nil {
+		// prob was 0 or invalid, use NeverSample.
+		return sampling.NeverSampleThreshold
+	}
+	return th
 }

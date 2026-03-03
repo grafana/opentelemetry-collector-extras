@@ -6,8 +6,10 @@ package partialtracesamplerprocessor
 import (
 	"context"
 	"math"
+	"strings"
 	"testing"
 
+	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/sampling"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/consumer/consumertest"
@@ -487,7 +489,9 @@ func TestGhostSpanConversion(t *testing.T) {
 	span.SetDroppedLinksCount(2)
 	span.TraceState().FromRaw("key=value")
 
-	convertToGhostSpan(span)
+	th, err := sampling.ProbabilityToThreshold(0.5)
+	require.NoError(t, err)
+	convertToGhostSpan(span, th)
 
 	// Structural IDs preserved.
 	assert.Equal(t, pcommon.TraceID(traceID), span.TraceID())
@@ -515,7 +519,7 @@ func TestGhostSpanConversion(t *testing.T) {
 	assert.Equal(t, uint32(0), span.DroppedAttributesCount())
 	assert.Equal(t, uint32(0), span.DroppedEventsCount())
 	assert.Equal(t, uint32(0), span.DroppedLinksCount())
-	assert.Equal(t, "", span.TraceState().AsRaw())
+	assert.Contains(t, span.TraceState().AsRaw(), "ot=th:")
 }
 
 func TestGhostSpanAtIntermediateRate(t *testing.T) {
@@ -761,4 +765,121 @@ func TestStatisticalMultipleRates(t *testing.T) {
 
 	// Sanity check: math.Abs to make sure delta check is reasonable
 	assert.Less(t, math.Abs(ratio-0.25), 0.05)
+}
+
+func TestKeptSpanGetsTraceState(t *testing.T) {
+	// 100% sampling should produce th:0 (AlwaysSampleThreshold).
+	sink := new(consumertest.TracesSink)
+	factory := NewFactory()
+	cfg := &Config{DefaultSamplingPercentage: 100}
+
+	proc, err := factory.CreateTraces(context.Background(), processortest.NewNopSettings(factory.Type()), cfg, sink)
+	require.NoError(t, err)
+
+	td := ptrace.NewTraces()
+	rs := td.ResourceSpans().AppendEmpty()
+	span := rs.ScopeSpans().AppendEmpty().Spans().AppendEmpty()
+	span.SetName("kept")
+	span.SetTraceID([16]byte{1, 2, 3, 4})
+	span.SetSpanID([8]byte{1})
+
+	err = proc.ConsumeTraces(context.Background(), td)
+	require.NoError(t, err)
+
+	require.Len(t, sink.AllTraces(), 1)
+	got := sink.AllTraces()[0].ResourceSpans().At(0).ScopeSpans().At(0).Spans().At(0)
+	assert.Equal(t, "ot=th:0", got.TraceState().AsRaw())
+}
+
+func TestKeptSpanPreservesVendorTraceState(t *testing.T) {
+	sink := new(consumertest.TracesSink)
+	factory := NewFactory()
+	cfg := &Config{DefaultSamplingPercentage: 100}
+
+	proc, err := factory.CreateTraces(context.Background(), processortest.NewNopSettings(factory.Type()), cfg, sink)
+	require.NoError(t, err)
+
+	td := ptrace.NewTraces()
+	rs := td.ResourceSpans().AppendEmpty()
+	span := rs.ScopeSpans().AppendEmpty().Spans().AppendEmpty()
+	span.SetName("vendor-test")
+	span.SetTraceID([16]byte{1, 2, 3, 4})
+	span.SetSpanID([8]byte{1})
+	span.TraceState().FromRaw("vendor=value")
+
+	err = proc.ConsumeTraces(context.Background(), td)
+	require.NoError(t, err)
+
+	require.Len(t, sink.AllTraces(), 1)
+	got := sink.AllTraces()[0].ResourceSpans().At(0).ScopeSpans().At(0).Spans().At(0)
+	ts := got.TraceState().AsRaw()
+	assert.Contains(t, ts, "ot=th:0", "should contain sampling threshold")
+	assert.Contains(t, ts, "vendor=value", "should preserve vendor tracestate")
+}
+
+func TestGhostSpanGetsTraceState(t *testing.T) {
+	sink := new(consumertest.TracesSink)
+	factory := NewFactory()
+	cfg := &Config{
+		DefaultSamplingPercentage: 0,
+		GhostSpans:                true,
+		Rules: []RuleConfig{
+			{SamplingPercentage: 100, Condition: `attributes["important"] == "yes"`},
+		},
+	}
+
+	proc, err := factory.CreateTraces(context.Background(), processortest.NewNopSettings(factory.Type()), cfg, sink)
+	require.NoError(t, err)
+
+	td := ptrace.NewTraces()
+	rs := td.ResourceSpans().AppendEmpty()
+	span := rs.ScopeSpans().AppendEmpty().Spans().AppendEmpty()
+	span.SetName("will-be-ghost")
+	span.SetTraceID([16]byte{1, 2, 3, 4})
+	span.SetSpanID([8]byte{1})
+
+	err = proc.ConsumeTraces(context.Background(), td)
+	require.NoError(t, err)
+
+	require.Len(t, sink.AllTraces(), 1)
+	got := sink.AllTraces()[0].ResourceSpans().At(0).ScopeSpans().At(0).Spans().At(0)
+	assert.Equal(t, "unsampled", got.Name())
+	assert.Contains(t, got.TraceState().AsRaw(), "ot=th:")
+}
+
+func TestScaledThresholdToSamplingThreshold(t *testing.T) {
+	// 100% → AlwaysSampleThreshold (th:0)
+	th := scaledThresholdToSamplingThreshold(numHashBuckets)
+	assert.Equal(t, sampling.AlwaysSampleThreshold, th)
+	assert.Equal(t, "0", th.TValue())
+
+	// Above numHashBuckets → AlwaysSampleThreshold
+	th = scaledThresholdToSamplingThreshold(numHashBuckets + 1)
+	assert.Equal(t, sampling.AlwaysSampleThreshold, th)
+
+	// 0 → NeverSampleThreshold
+	th = scaledThresholdToSamplingThreshold(0)
+	assert.Equal(t, sampling.NeverSampleThreshold, th)
+
+	// 50% → valid threshold with non-empty TValue
+	halfBuckets := uint32(numHashBuckets / 2)
+	th = scaledThresholdToSamplingThreshold(halfBuckets)
+	assert.NotEqual(t, "", th.TValue())
+	assert.InDelta(t, 0.5, th.Probability(), 0.01)
+}
+
+func TestSetTraceStateThreshold(t *testing.T) {
+	// Test with empty tracestate.
+	td := ptrace.NewTraces()
+	span := td.ResourceSpans().AppendEmpty().ScopeSpans().AppendEmpty().Spans().AppendEmpty()
+	setTraceStateThreshold(span, sampling.AlwaysSampleThreshold)
+	assert.Equal(t, "ot=th:0", span.TraceState().AsRaw())
+
+	// Test preserving existing vendor tracestate.
+	span2 := td.ResourceSpans().At(0).ScopeSpans().At(0).Spans().AppendEmpty()
+	span2.TraceState().FromRaw("vendor=value")
+	setTraceStateThreshold(span2, sampling.AlwaysSampleThreshold)
+	ts := span2.TraceState().AsRaw()
+	assert.True(t, strings.Contains(ts, "ot=th:0"))
+	assert.True(t, strings.Contains(ts, "vendor=value"))
 }

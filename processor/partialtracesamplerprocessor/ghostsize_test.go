@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/sampling"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
@@ -31,7 +32,7 @@ func TestGhostSpanSize(t *testing.T) {
 		for si := 0; si < rs.ScopeSpans().Len(); si++ {
 			spans := rs.ScopeSpans().At(si).Spans()
 			for spi := 0; spi < spans.Len(); spi++ {
-				convertToGhostSpan(spans.At(spi))
+				convertToGhostSpan(spans.At(spi), sampling.AlwaysSampleThreshold)
 			}
 		}
 	}
