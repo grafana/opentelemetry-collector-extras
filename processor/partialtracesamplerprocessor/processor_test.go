@@ -516,9 +516,9 @@ func TestGhostSpanConversion(t *testing.T) {
 	assert.Equal(t, 0, span.Links().Len())
 	assert.Equal(t, ptrace.StatusCodeUnset, span.Status().Code())
 	assert.Equal(t, "", span.Status().Message())
-	assert.Equal(t, uint32(0), span.DroppedAttributesCount())
-	assert.Equal(t, uint32(0), span.DroppedEventsCount())
-	assert.Equal(t, uint32(0), span.DroppedLinksCount())
+	assert.Equal(t, uint32(5), span.DroppedAttributesCount())
+	assert.Equal(t, uint32(3), span.DroppedEventsCount())
+	assert.Equal(t, uint32(2), span.DroppedLinksCount())
 	assert.Contains(t, span.TraceState().AsRaw(), "ot=th:")
 }
 

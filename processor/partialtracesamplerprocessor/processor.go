@@ -188,9 +188,6 @@ func convertToGhostSpan(span ptrace.Span, th sampling.Threshold) {
 	span.Links().RemoveIf(func(ptrace.SpanLink) bool { return true })
 	span.Status().SetCode(ptrace.StatusCodeUnset)
 	span.Status().SetMessage("")
-	span.SetDroppedAttributesCount(0)
-	span.SetDroppedEventsCount(0)
-	span.SetDroppedLinksCount(0)
 
 	// Set trace state with sampling threshold (ghost spans don't preserve original tracestate).
 	w3c, _ := sampling.NewW3CTraceState("")
