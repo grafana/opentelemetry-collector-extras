@@ -3,15 +3,21 @@ receivers:
     protocols:
       grpc:
         endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
 
 processors:
   partialtracesampler:
     default_sampling_percentage: 0
     ghost_spans: true
     rules:
-      # Keep root spans at 100% - child spans will be dropped or become ghost spans
+      # Keep root/server spans from the frontend service.
       - sampling_percentage: 100
-        condition: 'name == "lets-go"'
+        condition: 'resource.attributes["service.name"] == "frontend" and kind == SPAN_KIND_SERVER'
+      # Keep leaf spans from payment and currency services to demonstrate
+      # sampled -> ghost -> sampled patterns (checkout spans become ghosts).
+      - sampling_percentage: 100
+        condition: 'resource.attributes["service.name"] == "payment" or resource.attributes["service.name"] == "currency"'
 
   batch:
 
