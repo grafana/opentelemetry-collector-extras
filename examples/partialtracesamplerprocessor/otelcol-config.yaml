@@ -8,7 +8,7 @@ receivers:
 
 processors:
   partialtracesampler:
-    default_sampling_percentage: 0
+    default_sampling_percentage: 10
     ghost_spans: true
     rules:
       # Keep root/server spans from the frontend service.
