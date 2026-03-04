@@ -44,13 +44,41 @@ func (p *ghostSpanProcessor) processTraces(_ context.Context, td ptrace.Traces) 
 		return td, nil
 	}
 
-	// Keep server ghost spans whose parent is not a ghost, so we
-	// preserve the fact that a service was called.
-	for id := range serverGhosts {
-		parent := ghostParents[id]
-		if _, parentIsGhost := ghostParents[parent]; !parentIsGhost {
-			delete(ghostParents, id)
+	// Find server ghosts that are ancestors of at least one non-ghost span.
+	// Walk up from each non-ghost span through ghost parents, marking any
+	// server ghosts encountered along the way.
+	neededServers := make(map[pcommon.SpanID]struct{})
+	for i := 0; i < td.ResourceSpans().Len(); i++ {
+		rs := td.ResourceSpans().At(i)
+		for j := 0; j < rs.ScopeSpans().Len(); j++ {
+			ss := rs.ScopeSpans().At(j)
+			for k := 0; k < ss.Spans().Len(); k++ {
+				span := ss.Spans().At(k)
+				if isGhost(span) {
+					continue
+				}
+				current := span.ParentSpanID()
+				visited := make(map[pcommon.SpanID]struct{})
+				for {
+					if _, cycle := visited[current]; cycle {
+						break
+					}
+					if _, ok := ghostParents[current]; !ok {
+						break
+					}
+					if _, ok := serverGhosts[current]; ok {
+						neededServers[current] = struct{}{}
+					}
+					visited[current] = struct{}{}
+					current = ghostParents[current]
+				}
+			}
 		}
+	}
+
+	// Keep only server ghosts that have non-ghost descendants.
+	for id := range neededServers {
+		delete(ghostParents, id)
 	}
 
 	// Step 2: Resolve chains — follow parent pointers until reaching a non-ghost.
@@ -59,14 +87,15 @@ func (p *ghostSpanProcessor) processTraces(_ context.Context, td ptrace.Traces) 
 		resolveGhostChain(ghostID, ghostParents, resolved)
 	}
 
-	// Step 3: Reparent non-ghost spans whose parent is a ghost.
+	// Step 3: Reparent any span (including kept server ghosts) whose parent
+	// is a ghost being removed.
 	for i := 0; i < td.ResourceSpans().Len(); i++ {
 		rs := td.ResourceSpans().At(i)
 		for j := 0; j < rs.ScopeSpans().Len(); j++ {
 			ss := rs.ScopeSpans().At(j)
 			for k := 0; k < ss.Spans().Len(); k++ {
 				span := ss.Spans().At(k)
-				if !isGhost(span) {
+				if _, beingRemoved := ghostParents[span.SpanID()]; !beingRemoved {
 					if newParent, ok := resolved[span.ParentSpanID()]; ok {
 						span.SetParentSpanID(newParent)
 					}

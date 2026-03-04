@@ -125,13 +125,14 @@ func TestRemovesScopes(t *testing.T) {
 	// Create traces with a ghost span in its own resource/scope.
 	td := ptrace.NewTraces()
 
-	// Resource 1: only ghost spans — should be removed entirely.
+	// Resource 1: only ghost spans (non-root) — should be removed entirely.
 	rs1 := td.ResourceSpans().AppendEmpty()
 	rs1.Resource().Attributes().PutStr("service.name", "ghost-service")
 	ss1 := rs1.ScopeSpans().AppendEmpty()
 	ghost := ss1.Spans().AppendEmpty()
 	ghost.SetName("ghost")
 	ghost.SetSpanID(newSpanID(1))
+	ghost.SetParentSpanID(newSpanID(99))
 	ghost.Attributes().PutBool(ghostSpanAttributeKey, true)
 
 	// Resource 2: has a real span — should be kept.
@@ -178,10 +179,10 @@ func TestKeepServerGhostWithNonGhostParent(t *testing.T) {
 	assert.Equal(t, newSpanID(2), spans["client"].ParentSpanID())
 }
 
-func TestRemoveServerGhostWithGhostParent(t *testing.T) {
+func TestKeepServerGhostWithGhostParent(t *testing.T) {
 	// real(1) -> ghost(2) -> server_ghost(3) -> client(4)
-	// Server ghost's parent is a ghost, so it gets removed.
-	// Result: real(1) -> client(4)
+	// Server ghost is kept and reparented to real(1). ghost(2) removed.
+	// Result: real(1) -> server_ghost(3) -> client(4)
 	td := ptrace.NewTraces()
 	addSpan(td, "real", newSpanID(1), emptySpanID, false)
 	addSpan(td, "ghost", newSpanID(2), newSpanID(1), true)
@@ -193,12 +194,14 @@ func TestRemoveServerGhostWithGhostParent(t *testing.T) {
 	result, err := p.processTraces(context.Background(), td)
 	require.NoError(t, err)
 
-	assert.Equal(t, 2, result.SpanCount())
+	assert.Equal(t, 3, result.SpanCount())
 
 	spans := collectSpans(result)
 	assert.Nil(t, spans["ghost"])
-	assert.Nil(t, spans["server_ghost"])
-	assert.Equal(t, newSpanID(1), spans["client"].ParentSpanID())
+	assert.NotNil(t, spans["server_ghost"])
+	// server_ghost reparented past the removed ghost to real.
+	assert.Equal(t, newSpanID(1), spans["server_ghost"].ParentSpanID())
+	assert.Equal(t, newSpanID(3), spans["client"].ParentSpanID())
 }
 
 func TestKeepServerGhostChainedWithNonGhostChildren(t *testing.T) {
@@ -222,6 +225,108 @@ func TestKeepServerGhostChainedWithNonGhostChildren(t *testing.T) {
 	assert.Nil(t, spans["ghost"])
 	// client reparented to the kept server ghost.
 	assert.Equal(t, newSpanID(2), spans["client"].ParentSpanID())
+}
+
+func TestRemoveRootGhostSpan(t *testing.T) {
+	// root_ghost(1) -> ghost(2) -> client(3)
+	// Root ghost is removed (not a server span), client reparented to empty.
+	td := ptrace.NewTraces()
+	addSpan(td, "root_ghost", newSpanID(1), emptySpanID, true)
+	addSpan(td, "ghost", newSpanID(2), newSpanID(1), true)
+	addSpan(td, "client", newSpanID(3), newSpanID(2), false)
+
+	p := newGhostSpanProcessor()
+	result, err := p.processTraces(context.Background(), td)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, result.SpanCount())
+
+	spans := collectSpans(result)
+	assert.Nil(t, spans["root_ghost"])
+	assert.Nil(t, spans["ghost"])
+	assert.Equal(t, emptySpanID, spans["client"].ParentSpanID())
+}
+
+func TestRemoveServerGhostWithNoRealDescendants(t *testing.T) {
+	// real(1) -> server_ghost(2) -> ghost(3)
+	// server_ghost has no non-ghost descendants, so it gets removed too.
+	// Result: real(1)
+	td := ptrace.NewTraces()
+	addSpan(td, "real", newSpanID(1), emptySpanID, false)
+	sGhost := addSpan(td, "server_ghost", newSpanID(2), newSpanID(1), true)
+	sGhost.SetKind(ptrace.SpanKindServer)
+	addSpan(td, "ghost", newSpanID(3), newSpanID(2), true)
+
+	p := newGhostSpanProcessor()
+	result, err := p.processTraces(context.Background(), td)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, result.SpanCount())
+
+	spans := collectSpans(result)
+	assert.NotNil(t, spans["real"])
+	assert.Nil(t, spans["server_ghost"])
+	assert.Nil(t, spans["ghost"])
+}
+
+func TestFullServiceCallChain(t *testing.T) {
+	// real(1) -> client_ghost(2) -> server_ghost(3) -> ghost(4) -> real_child(5)
+	// Collapses to: real(1) -> server_ghost(3) -> real_child(5)
+	td := ptrace.NewTraces()
+	addSpan(td, "real", newSpanID(1), emptySpanID, false)
+	addSpan(td, "client_ghost", newSpanID(2), newSpanID(1), true)
+	sGhost := addSpan(td, "server_ghost", newSpanID(3), newSpanID(2), true)
+	sGhost.SetKind(ptrace.SpanKindServer)
+	addSpan(td, "ghost", newSpanID(4), newSpanID(3), true)
+	addSpan(td, "real_child", newSpanID(5), newSpanID(4), false)
+
+	p := newGhostSpanProcessor()
+	result, err := p.processTraces(context.Background(), td)
+	require.NoError(t, err)
+
+	assert.Equal(t, 3, result.SpanCount())
+
+	spans := collectSpans(result)
+	assert.Nil(t, spans["client_ghost"])
+	assert.Nil(t, spans["ghost"])
+
+	assert.NotNil(t, spans["real"])
+	assert.Equal(t, emptySpanID, spans["real"].ParentSpanID())
+
+	assert.NotNil(t, spans["server_ghost"])
+	assert.Equal(t, newSpanID(1), spans["server_ghost"].ParentSpanID())
+
+	assert.NotNil(t, spans["real_child"])
+	assert.Equal(t, newSpanID(3), spans["real_child"].ParentSpanID())
+}
+
+func TestNestedServiceCalls(t *testing.T) {
+	// real(1) -> client_ghost_A(2) -> server_ghost_A(3) -> client_ghost_B(4) -> server_ghost_B(5) -> real_leaf(6)
+	// Collapses to: real(1) -> server_ghost_A(3) -> server_ghost_B(5) -> real_leaf(6)
+	td := ptrace.NewTraces()
+	addSpan(td, "real", newSpanID(1), emptySpanID, false)
+	addSpan(td, "client_ghost_A", newSpanID(2), newSpanID(1), true)
+	sgA := addSpan(td, "server_ghost_A", newSpanID(3), newSpanID(2), true)
+	sgA.SetKind(ptrace.SpanKindServer)
+	addSpan(td, "client_ghost_B", newSpanID(4), newSpanID(3), true)
+	sgB := addSpan(td, "server_ghost_B", newSpanID(5), newSpanID(4), true)
+	sgB.SetKind(ptrace.SpanKindServer)
+	addSpan(td, "real_leaf", newSpanID(6), newSpanID(5), false)
+
+	p := newGhostSpanProcessor()
+	result, err := p.processTraces(context.Background(), td)
+	require.NoError(t, err)
+
+	assert.Equal(t, 4, result.SpanCount())
+
+	spans := collectSpans(result)
+	assert.Nil(t, spans["client_ghost_A"])
+	assert.Nil(t, spans["client_ghost_B"])
+
+	assert.Equal(t, emptySpanID, spans["real"].ParentSpanID())
+	assert.Equal(t, newSpanID(1), spans["server_ghost_A"].ParentSpanID())
+	assert.Equal(t, newSpanID(3), spans["server_ghost_B"].ParentSpanID())
+	assert.Equal(t, newSpanID(5), spans["real_leaf"].ParentSpanID())
 }
 
 // collectSpans returns a map of span name -> span for easy assertions.
