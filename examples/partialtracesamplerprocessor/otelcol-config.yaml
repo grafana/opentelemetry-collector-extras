@@ -19,6 +19,11 @@ processors:
       - sampling_percentage: 100
         condition: 'resource.attributes["service.name"] == "payment" or resource.attributes["service.name"] == "currency"'
 
+  groupbytrace:
+    wait_duration: 5s
+
+  ghostspan:
+
   batch:
 
 exporters:
@@ -34,5 +39,5 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [partialtracesampler, batch]
+      processors: [partialtracesampler, groupbytrace, ghostspan, batch]
       exporters: [otlp, debug]

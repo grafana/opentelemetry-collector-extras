@@ -11,6 +11,7 @@ RUN curl -fsSL -o /usr/local/bin/ocb \
 WORKDIR /build
 
 COPY processor/partialtracesamplerprocessor processor/partialtracesamplerprocessor
+COPY processor/ghostspanprocessor processor/ghostspanprocessor
 COPY examples/partialtracesamplerprocessor/otelcol-builder.yaml otelcol-builder.yaml
 
 RUN ocb --config=otelcol-builder.yaml

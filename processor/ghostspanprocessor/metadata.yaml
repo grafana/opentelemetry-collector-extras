@@ -1,0 +1,9 @@
+type: ghostspan
+
+status:
+  class: processor
+  stability:
+    development: [traces]
+  distributions: []
+  codeowners:
+    active: []

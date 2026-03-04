@@ -8,6 +8,8 @@ receivers:
 
 processors:
   - gomod: github.com/grafana/opentelemetry-collector-extras/processor/partialtracesamplerprocessor v0.0.0
+  - gomod: github.com/grafana/opentelemetry-collector-extras/processor/ghostspanprocessor v0.0.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/groupbytraceprocessor v0.146.0
   - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.146.1
 
 exporters:
@@ -16,3 +18,4 @@ exporters:
 
 replaces:
   - github.com/grafana/opentelemetry-collector-extras/processor/partialtracesamplerprocessor => /build/processor/partialtracesamplerprocessor
+  - github.com/grafana/opentelemetry-collector-extras/processor/ghostspanprocessor => /build/processor/ghostspanprocessor
