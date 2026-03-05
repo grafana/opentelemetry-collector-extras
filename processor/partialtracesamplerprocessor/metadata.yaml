@@ -8,6 +8,36 @@ status:
   codeowners:
     active: []
 
+telemetry:
+  metrics:
+    processor_partialtracesampler_bytes_emitted:
+      enabled: true
+      description: Total bytes of serialized traces emitted after sampling
+      unit: "By"
+      stability: development
+      sum: { value_type: int, monotonic: true }
+
+    processor_partialtracesampler_bytes_received:
+      enabled: true
+      description: Total bytes of serialized traces received before sampling
+      unit: "By"
+      stability: development
+      sum: { value_type: int, monotonic: true }
+
+    processor_partialtracesampler_compressed_bytes_emitted:
+      enabled: true
+      description: Total gzip-compressed bytes of serialized traces emitted after sampling
+      unit: "By"
+      stability: development
+      sum: { value_type: int, monotonic: true }
+
+    processor_partialtracesampler_compressed_bytes_received:
+      enabled: true
+      description: Total gzip-compressed bytes of serialized traces received before sampling
+      unit: "By"
+      stability: development
+      sum: { value_type: int, monotonic: true }
+
 tests:
   config:
     default_sampling_percentage: 100

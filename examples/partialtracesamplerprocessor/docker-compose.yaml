@@ -585,6 +585,7 @@ services:
     ports:
       - "${OTEL_COLLECTOR_PORT_GRPC}:${OTEL_COLLECTOR_PORT_GRPC}"
       - "${OTEL_COLLECTOR_PORT_HTTP}:${OTEL_COLLECTOR_PORT_HTTP}"
+      - "8888:8888"
     depends_on:
       tempo:
         condition: service_started
@@ -604,6 +605,25 @@ services:
       - "9095:9095"
     logging: *logging
 
+  # Prometheus for collector metrics
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    command: ["--config.file=/etc/prometheus/prometheus.yaml", "--web.enable-remote-write-receiver"]
+    deploy:
+      resources:
+        limits:
+          memory: 200M
+    restart: unless-stopped
+    volumes:
+      - ./prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      otel-collector:
+        condition: service_started
+    logging: *logging
+
   # Grafana
   grafana:
     image: grafana/grafana:latest
@@ -619,6 +639,8 @@ services:
       - GF_FEATURE_TOGGLES_ENABLE=traceqlEditor traceQLStreaming metricsSummary
     depends_on:
       tempo:
+        condition: service_started
+      prometheus:
         condition: service_started
     logging: *logging
 

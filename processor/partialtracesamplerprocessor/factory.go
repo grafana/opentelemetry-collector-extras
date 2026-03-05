@@ -36,5 +36,9 @@ func createTracesProcessor(
 	cfg component.Config,
 	nextConsumer consumer.Traces,
 ) (processor.Traces, error) {
-	return newPartialTraceSampler(ctx, set, cfg.(*Config), nextConsumer)
+	telemetryBuilder, err := metadata.NewTelemetryBuilder(set.TelemetrySettings)
+	if err != nil {
+		return nil, err
+	}
+	return newPartialTraceSampler(ctx, set, cfg.(*Config), nextConsumer, telemetryBuilder)
 }

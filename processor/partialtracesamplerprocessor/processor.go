@@ -8,6 +8,8 @@
 package partialtracesamplerprocessor
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -22,7 +24,10 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/processor"
 	"go.opentelemetry.io/collector/processor/processorhelper"
+	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/zap"
+
+	"github.com/grafana/opentelemetry-collector-extras/processor/partialtracesamplerprocessor/internal/metadata"
 )
 
 const (
@@ -56,6 +61,7 @@ type partialTraceSampler struct {
 	hashSeed               uint32
 	ghostSpans             bool
 	maxScaledThreshold     uint32
+	telemetryBuilder       *metadata.TelemetryBuilder
 }
 
 func newPartialTraceSampler(
@@ -63,6 +69,7 @@ func newPartialTraceSampler(
 	set processor.Settings,
 	cfg *Config,
 	nextConsumer consumer.Traces,
+	telemetryBuilder *metadata.TelemetryBuilder,
 ) (processor.Traces, error) {
 	converters := ottlfuncs.StandardConverters[*ottlspan.TransformContext]()
 	parser, err := ottlspan.NewParser(converters, set.TelemetrySettings)
@@ -102,10 +109,12 @@ func newPartialTraceSampler(
 		hashSeed:               cfg.HashSeed,
 		ghostSpans:             cfg.GhostSpans,
 		maxScaledThreshold:     maxScaledThreshold,
+		telemetryBuilder:       telemetryBuilder,
 	}
 
 	return processorhelper.NewTraces(ctx, set, cfg, nextConsumer, sampler.processTraces,
-		processorhelper.WithCapabilities(consumer.Capabilities{MutatesData: true}))
+		processorhelper.WithCapabilities(consumer.Capabilities{MutatesData: true}),
+		processorhelper.WithShutdown(sampler.shutdown))
 }
 
 func computeHash(b []byte, seed uint32) uint32 {
@@ -120,6 +129,8 @@ func computeHash(b []byte, seed uint32) uint32 {
 }
 
 func (p *partialTraceSampler) processTraces(ctx context.Context, td ptrace.Traces) (ptrace.Traces, error) {
+	p.recordSize(ctx, td, p.telemetryBuilder.ProcessorPartialtracesamplerBytesReceived, p.telemetryBuilder.ProcessorPartialtracesamplerCompressedBytesReceived)
+
 	td.ResourceSpans().RemoveIf(func(rs ptrace.ResourceSpans) bool {
 		rs.ScopeSpans().RemoveIf(func(ss ptrace.ScopeSpans) bool {
 			ss.Spans().RemoveIf(func(span ptrace.Span) bool {
@@ -139,10 +150,36 @@ func (p *partialTraceSampler) processTraces(ctx context.Context, td ptrace.Trace
 		})
 		return rs.ScopeSpans().Len() == 0
 	})
+
+	p.recordSize(ctx, td, p.telemetryBuilder.ProcessorPartialtracesamplerBytesEmitted, p.telemetryBuilder.ProcessorPartialtracesamplerCompressedBytesEmitted)
+
 	if td.ResourceSpans().Len() == 0 {
 		return td, processorhelper.ErrSkipProcessingData
 	}
 	return td, nil
+}
+
+func (p *partialTraceSampler) recordSize(ctx context.Context, td ptrace.Traces, uncompressed, compressed metric.Int64Counter) {
+	var m ptrace.ProtoMarshaler
+	data, err := m.MarshalTraces(td)
+	if err != nil {
+		return
+	}
+	uncompressed.Add(ctx, int64(len(data)))
+	compressed.Add(ctx, int64(gzipLen(data)))
+}
+
+func gzipLen(data []byte) int {
+	var buf bytes.Buffer
+	w := gzip.NewWriter(&buf)
+	_, _ = w.Write(data)
+	_ = w.Close()
+	return buf.Len()
+}
+
+func (p *partialTraceSampler) shutdown(_ context.Context) error {
+	p.telemetryBuilder.Shutdown()
+	return nil
 }
 
 func (p *partialTraceSampler) decideSampling(ctx context.Context, rs ptrace.ResourceSpans, ss ptrace.ScopeSpans, span ptrace.Span) (sampleDecision, uint32) {
