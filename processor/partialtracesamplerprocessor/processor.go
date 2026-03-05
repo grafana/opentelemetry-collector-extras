@@ -21,6 +21,7 @@ import (
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl/ottlfuncs"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/sampling"
 	"go.opentelemetry.io/collector/consumer"
+	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/processor"
 	"go.opentelemetry.io/collector/processor/processorhelper"
@@ -151,6 +152,10 @@ func (p *partialTraceSampler) processTraces(ctx context.Context, td ptrace.Trace
 		return rs.ScopeSpans().Len() == 0
 	})
 
+	if p.ghostSpans {
+		consolidateGhostScopes(td)
+	}
+
 	p.recordSize(ctx, td, p.telemetryBuilder.ProcessorPartialtracesamplerBytesEmitted, p.telemetryBuilder.ProcessorPartialtracesamplerCompressedBytesEmitted)
 
 	if td.ResourceSpans().Len() == 0 {
@@ -180,6 +185,63 @@ func gzipLen(data []byte) int {
 func (p *partialTraceSampler) shutdown(_ context.Context) error {
 	p.telemetryBuilder.Shutdown()
 	return nil
+}
+
+// consolidateGhostScopes moves all ghost spans within each ResourceSpans into
+// a single ScopeSpans with an empty InstrumentationScope. This avoids
+// duplicating scope metadata (name, version, attributes) for every ghost span.
+func consolidateGhostScopes(td ptrace.Traces) {
+	for ri := 0; ri < td.ResourceSpans().Len(); ri++ {
+		rs := td.ResourceSpans().At(ri)
+		originalLen := rs.ScopeSpans().Len()
+
+		// Check whether any scope is entirely ghost spans.
+		hasAllGhostScope := false
+		for si := 0; si < originalLen; si++ {
+			if allGhosts(rs.ScopeSpans().At(si)) {
+				hasAllGhostScope = true
+				break
+			}
+		}
+		if !hasAllGhostScope {
+			continue
+		}
+
+		ghostSS := rs.ScopeSpans().AppendEmpty()
+
+		for si := 0; si < originalLen; si++ {
+			ss := rs.ScopeSpans().At(si)
+			if !allGhosts(ss) {
+				continue
+			}
+			// Move all spans from this all-ghost scope into the consolidated scope.
+			for k := 0; k < ss.Spans().Len(); k++ {
+				ss.Spans().At(k).MoveTo(ghostSS.Spans().AppendEmpty())
+			}
+			// Mark as empty so it gets cleaned up below.
+			ss.Spans().RemoveIf(func(ptrace.Span) bool { return true })
+		}
+
+		// Clean up original scopes that are now empty, and the ghost scope
+		// if no all-ghost scopes were found.
+		rs.ScopeSpans().RemoveIf(func(ss ptrace.ScopeSpans) bool {
+			return ss.Spans().Len() == 0
+		})
+	}
+}
+
+func allGhosts(ss ptrace.ScopeSpans) bool {
+	for k := 0; k < ss.Spans().Len(); k++ {
+		if !isGhostSpan(ss.Spans().At(k)) {
+			return false
+		}
+	}
+	return ss.Spans().Len() > 0
+}
+
+func isGhostSpan(span ptrace.Span) bool {
+	v, ok := span.Attributes().Get(ghostSpanAttributeKey)
+	return ok && v.Type() == pcommon.ValueTypeBool && v.Bool()
 }
 
 func (p *partialTraceSampler) decideSampling(ctx context.Context, rs ptrace.ResourceSpans, ss ptrace.ScopeSpans, span ptrace.Span) (sampleDecision, uint32) {

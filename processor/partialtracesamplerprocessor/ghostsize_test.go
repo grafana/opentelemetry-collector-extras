@@ -19,14 +19,41 @@ import (
 // conversion on a realistic trace. This is not a correctness test — it serves
 // as documentation that ghost spans provide meaningful size savings.
 func TestGhostSpanSize(t *testing.T) {
-	// Uncomment to run this and get an idea of ghost span size.
-	td := buildRealisticTrace(10)
+	td := buildMultiScopeTrace(10)
 
 	marshaler := ptrace.ProtoMarshaler{}
 	original, err := marshaler.MarshalTraces(td)
 	require.NoError(t, err)
 
 	// Convert all spans to ghosts.
+	convertAllToGhosts(td)
+
+	ghost, err := marshaler.MarshalTraces(td)
+	require.NoError(t, err)
+
+	// Consolidate ghost spans into a single empty scope per resource.
+	consolidateGhostScopes(td)
+
+	consolidated, err := marshaler.MarshalTraces(td)
+	require.NoError(t, err)
+
+	originalGz := gzipSize(t, original)
+	ghostGz := gzipSize(t, ghost)
+	consolidatedGz := gzipSize(t, consolidated)
+
+	t.Logf("Protobuf:")
+	t.Logf("  Original:     %d bytes", len(original))
+	t.Logf("  Ghost:        %d bytes (%.1f%%)", len(ghost), pct(len(ghost), len(original)))
+	t.Logf("  Consolidated: %d bytes (%.1f%%)", len(consolidated), pct(len(consolidated), len(original)))
+	t.Logf("Gzipped protobuf:")
+	t.Logf("  Original:     %d bytes", originalGz)
+	t.Logf("  Ghost:        %d bytes (%.1f%%)", ghostGz, pct(ghostGz, originalGz))
+	t.Logf("  Consolidated: %d bytes (%.1f%%)", consolidatedGz, pct(consolidatedGz, originalGz))
+}
+
+func pct(part, whole int) float64 { return float64(part) / float64(whole) * 100 }
+
+func convertAllToGhosts(td ptrace.Traces) {
 	for ri := 0; ri < td.ResourceSpans().Len(); ri++ {
 		rs := td.ResourceSpans().At(ri)
 		for si := 0; si < rs.ScopeSpans().Len(); si++ {
@@ -36,24 +63,6 @@ func TestGhostSpanSize(t *testing.T) {
 			}
 		}
 	}
-
-	ghost, err := marshaler.MarshalTraces(td)
-	require.NoError(t, err)
-
-	originalGz := gzipSize(t, original)
-	ghostGz := gzipSize(t, ghost)
-
-	ratio := float64(len(ghost)) / float64(len(original)) * 100
-	ratioGz := float64(ghostGz) / float64(originalGz) * 100
-
-	t.Logf("Protobuf:")
-	t.Logf("  Original: %d bytes", len(original))
-	t.Logf("  Ghost:    %d bytes", len(ghost))
-	t.Logf("  Ratio:    %.1f%% (%.1fx smaller)", ratio, float64(len(original))/float64(len(ghost)))
-	t.Logf("Gzipped protobuf:")
-	t.Logf("  Original: %d bytes", originalGz)
-	t.Logf("  Ghost:    %d bytes", ghostGz)
-	t.Logf("  Ratio:    %.1f%% (%.1fx smaller)", ratioGz, float64(originalGz)/float64(ghostGz))
 }
 
 func gzipSize(t *testing.T, data []byte) int {
@@ -66,9 +75,10 @@ func gzipSize(t *testing.T, data []byte) int {
 	return buf.Len()
 }
 
-// buildRealisticTrace creates a trace with the given number of spans, each
-// populated with attributes, events, and links typical of an HTTP service.
-func buildRealisticTrace(numSpans int) ptrace.Traces {
+// buildMultiScopeTrace creates a trace spread across multiple instrumentation
+// scopes within a single resource, simulating a real service that uses several
+// instrumented libraries (HTTP, gRPC, DB).
+func buildMultiScopeTrace(spansPerScope int) ptrace.Traces {
 	td := ptrace.NewTraces()
 	rs := td.ResourceSpans().AppendEmpty()
 	res := rs.Resource().Attributes()
@@ -77,48 +87,62 @@ func buildRealisticTrace(numSpans int) ptrace.Traces {
 	res.PutStr("deployment.environment", "production")
 	res.PutStr("host.name", "ip-10-0-1-42.ec2.internal")
 
-	ss := rs.ScopeSpans().AppendEmpty()
-	ss.Scope().SetName("go.opentelemetry.io/contrib/instrumentation/net/http")
-	ss.Scope().SetVersion("0.49.0")
-
 	traceID := [16]byte{0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
 		0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10}
 
-	for i := range numSpans {
-		span := ss.Spans().AppendEmpty()
-		span.SetTraceID(pcommon.TraceID(traceID))
-		span.SetSpanID([8]byte{byte(i + 1), 0, 0, 0, 0, 0, 0, byte(i)})
-		if i > 0 {
-			span.SetParentSpanID([8]byte{byte(i), 0, 0, 0, 0, 0, 0, byte(i - 1)})
+	scopes := []struct {
+		name    string
+		version string
+	}{
+		{"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp", "0.49.0"},
+		{"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc", "0.49.0"},
+		{"go.opentelemetry.io/contrib/instrumentation/database/sql/otelsql", "0.49.0"},
+	}
+
+	spanIdx := 0
+	for _, scope := range scopes {
+		ss := rs.ScopeSpans().AppendEmpty()
+		ss.Scope().SetName(scope.name)
+		ss.Scope().SetVersion(scope.version)
+
+		for i := range spansPerScope {
+			span := ss.Spans().AppendEmpty()
+			span.SetTraceID(pcommon.TraceID(traceID))
+			span.SetSpanID([8]byte{byte(spanIdx + 1), 0, 0, 0, 0, 0, 0, byte(spanIdx)})
+			if spanIdx > 0 {
+				span.SetParentSpanID([8]byte{byte(spanIdx), 0, 0, 0, 0, 0, 0, byte(spanIdx - 1)})
+			}
+			span.SetName(fmt.Sprintf("GET /api/users/%d", i))
+			span.SetKind(ptrace.SpanKindServer)
+			span.SetStartTimestamp(pcommon.Timestamp(1700000000000000000 + int64(spanIdx)*1000000))
+			span.SetEndTimestamp(pcommon.Timestamp(1700000000050000000 + int64(spanIdx)*1000000))
+			span.Status().SetCode(ptrace.StatusCodeOk)
+
+			attrs := span.Attributes()
+			attrs.PutStr("http.method", "GET")
+			attrs.PutInt("http.status_code", 200)
+			attrs.PutStr("http.url", fmt.Sprintf("https://api.example.com/api/users/%d", i))
+			attrs.PutStr("net.peer.ip", "10.0.1.100")
+			attrs.PutInt("net.peer.port", 443)
+			attrs.PutStr("http.user_agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36")
+
+			evt1 := span.Events().AppendEmpty()
+			evt1.SetName("request.received")
+			evt1.SetTimestamp(pcommon.Timestamp(1700000000000000000 + int64(spanIdx)*1000000))
+			evt1.Attributes().PutStr("request.id", fmt.Sprintf("req-%d", spanIdx))
+			evt1.Attributes().PutInt("request.size", 1024)
+
+			evt2 := span.Events().AppendEmpty()
+			evt2.SetName("response.sent")
+			evt2.SetTimestamp(pcommon.Timestamp(1700000000050000000 + int64(spanIdx)*1000000))
+			evt2.Attributes().PutInt("response.size", 4096)
+
+			link := span.Links().AppendEmpty()
+			link.SetTraceID([16]byte{0xff, 0xee, 0xdd, 0xcc, byte(spanIdx)})
+			link.Attributes().PutStr("link.type", "parent_from_other_trace")
+
+			spanIdx++
 		}
-		span.SetName(fmt.Sprintf("GET /api/users/%d", i))
-		span.SetKind(ptrace.SpanKindServer)
-		span.SetStartTimestamp(pcommon.Timestamp(1700000000000000000 + int64(i)*1000000))
-		span.SetEndTimestamp(pcommon.Timestamp(1700000000050000000 + int64(i)*1000000))
-		span.Status().SetCode(ptrace.StatusCodeOk)
-
-		attrs := span.Attributes()
-		attrs.PutStr("http.method", "GET")
-		attrs.PutInt("http.status_code", 200)
-		attrs.PutStr("http.url", fmt.Sprintf("https://api.example.com/api/users/%d", i))
-		attrs.PutStr("net.peer.ip", "10.0.1.100")
-		attrs.PutInt("net.peer.port", 443)
-		attrs.PutStr("http.user_agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36")
-
-		evt1 := span.Events().AppendEmpty()
-		evt1.SetName("request.received")
-		evt1.SetTimestamp(pcommon.Timestamp(1700000000000000000 + int64(i)*1000000))
-		evt1.Attributes().PutStr("request.id", fmt.Sprintf("req-%d", i))
-		evt1.Attributes().PutInt("request.size", 1024)
-
-		evt2 := span.Events().AppendEmpty()
-		evt2.SetName("response.sent")
-		evt2.SetTimestamp(pcommon.Timestamp(1700000000050000000 + int64(i)*1000000))
-		evt2.Attributes().PutInt("response.size", 4096)
-
-		link := span.Links().AppendEmpty()
-		link.SetTraceID([16]byte{0xff, 0xee, 0xdd, 0xcc, byte(i)})
-		link.Attributes().PutStr("link.type", "parent_from_other_trace")
 	}
 
 	return td
