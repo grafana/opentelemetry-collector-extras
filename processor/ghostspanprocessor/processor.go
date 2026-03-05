@@ -2,13 +2,17 @@ package ghostspanprocessor
 
 import (
 	"context"
+	"encoding/hex"
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/processor/processorhelper"
 )
 
-const ghostSpanAttributeKey = "grafana.partial_trace.ghost"
+const (
+	ghostSpanAttributeKey = "grafana.partial_trace.ghost"
+	collapsedSpanIDsKey   = "grafana.partial_trace.collapsed_span_ids"
+)
 
 type ghostSpanProcessor struct{}
 
@@ -40,7 +44,22 @@ func (p *ghostSpanProcessor) processTraces(_ context.Context, td ptrace.Traces) 
 		}
 	}
 
-	if len(ghostParents) == 0 {
+	// Check if any span has collapsed span IDs from the partial trace sampler.
+	hasCollapsed := false
+	for i := 0; i < td.ResourceSpans().Len() && !hasCollapsed; i++ {
+		rs := td.ResourceSpans().At(i)
+		for j := 0; j < rs.ScopeSpans().Len() && !hasCollapsed; j++ {
+			ss := rs.ScopeSpans().At(j)
+			for k := 0; k < ss.Spans().Len(); k++ {
+				if _, ok := ss.Spans().At(k).Attributes().Get(collapsedSpanIDsKey); ok {
+					hasCollapsed = true
+					break
+				}
+			}
+		}
+	}
+
+	if len(ghostParents) == 0 && !hasCollapsed {
 		return td, nil
 	}
 
@@ -87,8 +106,37 @@ func (p *ghostSpanProcessor) processTraces(_ context.Context, td ptrace.Traces) 
 		resolveGhostChain(ghostID, ghostParents, resolved)
 	}
 
+	// Build a lookup from collapsed span IDs to the span that absorbed them.
+	// This lets us reparent spans whose parent was collapsed during partial
+	// trace sampling (before groupbytrace assembled the full trace).
+	collapsedLookup := make(map[pcommon.SpanID]pcommon.SpanID)
+	for i := 0; i < td.ResourceSpans().Len(); i++ {
+		rs := td.ResourceSpans().At(i)
+		for j := 0; j < rs.ScopeSpans().Len(); j++ {
+			ss := rs.ScopeSpans().At(j)
+			for k := 0; k < ss.Spans().Len(); k++ {
+				span := ss.Spans().At(k)
+				v, ok := span.Attributes().Get(collapsedSpanIDsKey)
+				if !ok || v.Type() != pcommon.ValueTypeSlice {
+					continue
+				}
+				sl := v.Slice()
+				for idx := 0; idx < sl.Len(); idx++ {
+					idStr := sl.At(idx).Str()
+					b, err := hex.DecodeString(idStr)
+					if err != nil || len(b) != 8 {
+						continue
+					}
+					var collapsedID pcommon.SpanID
+					copy(collapsedID[:], b)
+					collapsedLookup[collapsedID] = span.SpanID()
+				}
+			}
+		}
+	}
+
 	// Step 3: Reparent any span (including kept server ghosts) whose parent
-	// is a ghost being removed.
+	// is a ghost being removed, or was collapsed into another span.
 	for i := 0; i < td.ResourceSpans().Len(); i++ {
 		rs := td.ResourceSpans().At(i)
 		for j := 0; j < rs.ScopeSpans().Len(); j++ {
@@ -96,10 +144,15 @@ func (p *ghostSpanProcessor) processTraces(_ context.Context, td ptrace.Traces) 
 			for k := 0; k < ss.Spans().Len(); k++ {
 				span := ss.Spans().At(k)
 				if _, beingRemoved := ghostParents[span.SpanID()]; !beingRemoved {
-					if newParent, ok := resolved[span.ParentSpanID()]; ok {
+					parentID := span.ParentSpanID()
+					if newParent, ok := resolved[parentID]; ok {
+						span.SetParentSpanID(newParent)
+					} else if newParent, ok := collapsedLookup[parentID]; ok {
 						span.SetParentSpanID(newParent)
 					}
 				}
+				// Clean up the collapsed span IDs attribute.
+				span.Attributes().Remove(collapsedSpanIDsKey)
 			}
 		}
 	}

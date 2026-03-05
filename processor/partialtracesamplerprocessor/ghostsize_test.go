@@ -31,6 +31,12 @@ func TestGhostSpanSize(t *testing.T) {
 	ghost, err := marshaler.MarshalTraces(td)
 	require.NoError(t, err)
 
+	// Collapse internal ghosts.
+	collapseInternalGhosts(td)
+
+	collapsed, err := marshaler.MarshalTraces(td)
+	require.NoError(t, err)
+
 	// Consolidate ghost spans into a single empty scope per resource.
 	consolidateGhostScopes(td)
 
@@ -39,15 +45,18 @@ func TestGhostSpanSize(t *testing.T) {
 
 	originalGz := gzipSize(t, original)
 	ghostGz := gzipSize(t, ghost)
+	collapsedGz := gzipSize(t, collapsed)
 	consolidatedGz := gzipSize(t, consolidated)
 
 	t.Logf("Protobuf:")
 	t.Logf("  Original:     %d bytes", len(original))
 	t.Logf("  Ghost:        %d bytes (%.1f%%)", len(ghost), pct(len(ghost), len(original)))
+	t.Logf("  Collapsed:    %d bytes (%.1f%%)", len(collapsed), pct(len(collapsed), len(original)))
 	t.Logf("  Consolidated: %d bytes (%.1f%%)", len(consolidated), pct(len(consolidated), len(original)))
 	t.Logf("Gzipped protobuf:")
 	t.Logf("  Original:     %d bytes", originalGz)
 	t.Logf("  Ghost:        %d bytes (%.1f%%)", ghostGz, pct(ghostGz, originalGz))
+	t.Logf("  Collapsed:    %d bytes (%.1f%%)", collapsedGz, pct(collapsedGz, originalGz))
 	t.Logf("  Consolidated: %d bytes (%.1f%%)", consolidatedGz, pct(consolidatedGz, originalGz))
 }
 
@@ -112,8 +121,18 @@ func buildMultiScopeTrace(spansPerScope int) ptrace.Traces {
 			if spanIdx > 0 {
 				span.SetParentSpanID([8]byte{byte(spanIdx), 0, 0, 0, 0, 0, 0, byte(spanIdx - 1)})
 			}
-			span.SetName(fmt.Sprintf("GET /api/users/%d", i))
-			span.SetKind(ptrace.SpanKindServer)
+			// Realistic mix: ~1/3 server, ~1/3 client, ~1/3 internal.
+			switch spanIdx % 3 {
+			case 0:
+				span.SetName(fmt.Sprintf("GET /api/users/%d", i))
+				span.SetKind(ptrace.SpanKindServer)
+			case 1:
+				span.SetName(fmt.Sprintf("GET /api/users/%d", i))
+				span.SetKind(ptrace.SpanKindClient)
+			default:
+				span.SetName(fmt.Sprintf("middleware.auth.%d", i))
+				span.SetKind(ptrace.SpanKindInternal)
+			}
 			span.SetStartTimestamp(pcommon.Timestamp(1700000000000000000 + int64(spanIdx)*1000000))
 			span.SetEndTimestamp(pcommon.Timestamp(1700000000050000000 + int64(spanIdx)*1000000))
 			span.Status().SetCode(ptrace.StatusCodeOk)

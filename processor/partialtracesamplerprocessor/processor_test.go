@@ -5,7 +5,9 @@ package partialtracesamplerprocessor
 
 import (
 	"context"
+	"encoding/hex"
 	"math"
+	"sort"
 	"strings"
 	"testing"
 
@@ -882,4 +884,115 @@ func TestSetTraceStateThreshold(t *testing.T) {
 	ts := span2.TraceState().AsRaw()
 	assert.True(t, strings.Contains(ts, "ot=th:0"))
 	assert.True(t, strings.Contains(ts, "vendor=value"))
+}
+
+func newSpanID(b byte) pcommon.SpanID {
+	return pcommon.SpanID{0, 0, 0, 0, 0, 0, 0, b}
+}
+
+// addGhostSpan adds a ghost span to the first resource/scope in td.
+func addGhostSpan(td ptrace.Traces, spanID, parentSpanID pcommon.SpanID, kind ptrace.SpanKind) ptrace.Span {
+	rs := td.ResourceSpans().At(0)
+	ss := rs.ScopeSpans().At(0)
+	span := ss.Spans().AppendEmpty()
+	span.SetName(ghostSpanName)
+	span.SetSpanID(spanID)
+	span.SetParentSpanID(parentSpanID)
+	span.SetKind(kind)
+	span.Attributes().PutBool(ghostSpanAttributeKey, true)
+	return span
+}
+
+// addKeptSpan adds a non-ghost span to the first resource/scope in td.
+func addKeptSpan(td ptrace.Traces, name string, spanID, parentSpanID pcommon.SpanID) ptrace.Span {
+	rs := td.ResourceSpans().At(0)
+	ss := rs.ScopeSpans().At(0)
+	span := ss.Spans().AppendEmpty()
+	span.SetName(name)
+	span.SetSpanID(spanID)
+	span.SetParentSpanID(parentSpanID)
+	return span
+}
+
+func collectSpansByID(td ptrace.Traces) map[pcommon.SpanID]ptrace.Span {
+	result := make(map[pcommon.SpanID]ptrace.Span)
+	for i := 0; i < td.ResourceSpans().Len(); i++ {
+		rs := td.ResourceSpans().At(i)
+		for j := 0; j < rs.ScopeSpans().Len(); j++ {
+			ss := rs.ScopeSpans().At(j)
+			for k := 0; k < ss.Spans().Len(); k++ {
+				span := ss.Spans().At(k)
+				result[span.SpanID()] = span
+			}
+		}
+	}
+	return result
+}
+
+func getCollapsedIDs(span ptrace.Span) []string {
+	v, ok := span.Attributes().Get(collapsedSpanIDsKey)
+	if !ok {
+		return nil
+	}
+	sl := v.Slice()
+	var ids []string
+	for i := 0; i < sl.Len(); i++ {
+		ids = append(ids, sl.At(i).Str())
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func TestCollapseInternalGhosts(t *testing.T) {
+	// kept(A) -> internal_ghost(B) -> internal_ghost(C) -> server_ghost(D)
+	// Should collapse B and C, reparent D to A, store B+C IDs on A.
+	td := ptrace.NewTraces()
+	rs := td.ResourceSpans().AppendEmpty()
+	rs.ScopeSpans().AppendEmpty()
+
+	addKeptSpan(td, "A", newSpanID(1), pcommon.SpanID{})
+	addGhostSpan(td, newSpanID(2), newSpanID(1), ptrace.SpanKindInternal)
+	addGhostSpan(td, newSpanID(3), newSpanID(2), ptrace.SpanKindInternal)
+	addGhostSpan(td, newSpanID(4), newSpanID(3), ptrace.SpanKindServer)
+
+	collapseInternalGhosts(td)
+
+	spans := collectSpansByID(td)
+
+	// B and C should be removed.
+	assert.Equal(t, 2, td.SpanCount())
+	_, hasB := spans[newSpanID(2)]
+	_, hasC := spans[newSpanID(3)]
+	assert.False(t, hasB, "internal ghost B should be collapsed")
+	assert.False(t, hasC, "internal ghost C should be collapsed")
+
+	// D should be reparented to A.
+	spanD := spans[newSpanID(4)]
+	assert.Equal(t, newSpanID(1), spanD.ParentSpanID())
+
+	// A should have collapsed span IDs for B and C.
+	spanA := spans[newSpanID(1)]
+	collapsedIDs := getCollapsedIDs(spanA)
+	idB := newSpanID(2)
+	idC := newSpanID(3)
+	expectedB := hex.EncodeToString(idB[:])
+	expectedC := hex.EncodeToString(idC[:])
+	expected := []string{expectedB, expectedC}
+	sort.Strings(expected)
+	assert.Equal(t, expected, collapsedIDs)
+}
+
+func TestCollapseInternalGhostsParentOutsideBatch(t *testing.T) {
+	// internal_ghost(B) with parent(A) NOT in the batch.
+	// B should NOT be collapsed (safe fallback).
+	td := ptrace.NewTraces()
+	rs := td.ResourceSpans().AppendEmpty()
+	rs.ScopeSpans().AppendEmpty()
+
+	// B's parent (spanID 1) is not in this batch.
+	addGhostSpan(td, newSpanID(2), newSpanID(1), ptrace.SpanKindInternal)
+
+	collapseInternalGhosts(td)
+
+	assert.Equal(t, 1, td.SpanCount(), "internal ghost with parent outside batch should be kept")
 }

@@ -12,6 +12,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"hash/fnv"
 	"strings"
@@ -46,8 +47,9 @@ const (
 )
 
 const (
-	ghostSpanName         = "unsampled"
-	ghostSpanAttributeKey = "grafana.partial_trace.ghost"
+	ghostSpanName          = "unsampled"
+	ghostSpanAttributeKey  = "grafana.partial_trace.ghost"
+	collapsedSpanIDsKey    = "grafana.partial_trace.collapsed_span_ids"
 )
 
 type compiledRule struct {
@@ -153,6 +155,7 @@ func (p *partialTraceSampler) processTraces(ctx context.Context, td ptrace.Trace
 	})
 
 	if p.ghostSpans {
+		collapseInternalGhosts(td)
 		consolidateGhostScopes(td)
 	}
 
@@ -239,6 +242,127 @@ func allGhosts(ss ptrace.ScopeSpans) bool {
 	return ss.Spans().Len() > 0
 }
 
+// isInternalGhost returns true if the span is a ghost with internal or unspecified kind.
+func isInternalGhost(span ptrace.Span) bool {
+	if !isGhostSpan(span) {
+		return false
+	}
+	switch span.Kind() {
+	case ptrace.SpanKindClient, ptrace.SpanKindServer, ptrace.SpanKindProducer, ptrace.SpanKindConsumer:
+		return false
+	default:
+		return true
+	}
+}
+
+// collapseInternalGhosts removes internal/unspecified-kind ghost spans by
+// reparenting their children to the nearest non-internal-ghost ancestor.
+// Collapsed span IDs are stored on the ancestor so the ghost span processor
+// can still reparent orphaned descendants after groupbytrace assembles the
+// full trace.
+func collapseInternalGhosts(td ptrace.Traces) {
+	for ri := 0; ri < td.ResourceSpans().Len(); ri++ {
+		rs := td.ResourceSpans().At(ri)
+
+		// Build span map across all scopes in this resource.
+		type spanInfo struct {
+			span  ptrace.Span
+			scope int // scope index
+		}
+		spanMap := make(map[pcommon.SpanID]spanInfo)
+		for si := 0; si < rs.ScopeSpans().Len(); si++ {
+			ss := rs.ScopeSpans().At(si)
+			for k := 0; k < ss.Spans().Len(); k++ {
+				span := ss.Spans().At(k)
+				spanMap[span.SpanID()] = spanInfo{span: span, scope: si}
+			}
+		}
+
+		// Identify internal ghosts and resolve their ancestors.
+		// resolvedAncestor maps internal ghost span ID → nearest non-internal-ghost ancestor span ID.
+		resolvedAncestor := make(map[pcommon.SpanID]pcommon.SpanID)
+		toRemove := make(map[pcommon.SpanID]struct{})
+
+		for id, info := range spanMap {
+			if !isInternalGhost(info.span) {
+				continue
+			}
+
+			// Walk up parent chain to find nearest non-internal-ghost ancestor in this batch.
+			ancestor := pcommon.SpanID{}
+			found := false
+			current := info.span.ParentSpanID()
+			visited := make(map[pcommon.SpanID]struct{})
+			for {
+				if current.IsEmpty() {
+					break
+				}
+				if _, cycle := visited[current]; cycle {
+					break
+				}
+				visited[current] = struct{}{}
+				parentInfo, inBatch := spanMap[current]
+				if !inBatch {
+					// Parent not in this batch — can't safely collapse.
+					break
+				}
+				if !isInternalGhost(parentInfo.span) {
+					ancestor = current
+					found = true
+					break
+				}
+				current = parentInfo.span.ParentSpanID()
+			}
+
+			if found {
+				resolvedAncestor[id] = ancestor
+				toRemove[id] = struct{}{}
+			}
+		}
+
+		if len(toRemove) == 0 {
+			continue
+		}
+
+		// Collect collapsed span IDs per ancestor.
+		ancestorCollapsed := make(map[pcommon.SpanID][]string)
+		for ghostID, ancestorID := range resolvedAncestor {
+			ancestorCollapsed[ancestorID] = append(ancestorCollapsed[ancestorID], hex.EncodeToString(ghostID[:]))
+		}
+
+		// Reparent remaining spans whose parent is a collapsed internal ghost.
+		for _, info := range spanMap {
+			if _, removed := toRemove[info.span.SpanID()]; removed {
+				continue
+			}
+			parentID := info.span.ParentSpanID()
+			if newParent, ok := resolvedAncestor[parentID]; ok {
+				info.span.SetParentSpanID(newParent)
+			}
+		}
+
+		// Store collapsed span IDs on ancestor spans.
+		for ancestorID, collapsedIDs := range ancestorCollapsed {
+			info := spanMap[ancestorID]
+			arr := info.span.Attributes().PutEmptySlice(collapsedSpanIDsKey)
+			for _, id := range collapsedIDs {
+				arr.AppendEmpty().SetStr(id)
+			}
+		}
+
+		// Remove collapsed spans and clean up empty scopes.
+		for si := 0; si < rs.ScopeSpans().Len(); si++ {
+			rs.ScopeSpans().At(si).Spans().RemoveIf(func(span ptrace.Span) bool {
+				_, remove := toRemove[span.SpanID()]
+				return remove
+			})
+		}
+		rs.ScopeSpans().RemoveIf(func(ss ptrace.ScopeSpans) bool {
+			return ss.Spans().Len() == 0
+		})
+	}
+}
+
 func isGhostSpan(span ptrace.Span) bool {
 	v, ok := span.Attributes().Get(ghostSpanAttributeKey)
 	return ok && v.Type() == pcommon.ValueTypeBool && v.Bool()
@@ -282,9 +406,11 @@ func convertToGhostSpan(span ptrace.Span, th sampling.Threshold) {
 	// so they remain useful in trace visualizations. Internal spans get a generic name.
 	switch span.Kind() {
 	case ptrace.SpanKindClient, ptrace.SpanKindServer, ptrace.SpanKindProducer, ptrace.SpanKindConsumer:
-		// keep original name
+		// keep original name and timestamps for visualization
 	default:
 		span.SetName(ghostSpanName)
+		span.SetStartTimestamp(0)
+		span.SetEndTimestamp(0)
 	}
 
 	span.Attributes().Clear()

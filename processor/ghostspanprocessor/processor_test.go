@@ -2,6 +2,7 @@ package ghostspanprocessor
 
 import (
 	"context"
+	"encoding/hex"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -327,6 +328,49 @@ func TestNestedServiceCalls(t *testing.T) {
 	assert.Equal(t, newSpanID(1), spans["server_ghost_A"].ParentSpanID())
 	assert.Equal(t, newSpanID(3), spans["server_ghost_B"].ParentSpanID())
 	assert.Equal(t, newSpanID(5), spans["real_leaf"].ParentSpanID())
+}
+
+func TestReparentCollapsedSpan(t *testing.T) {
+	// Span A has collapsed_span_ids = [hex(spanID 2)].
+	// Span C's parent is spanID 2 (which was collapsed into A).
+	// After processing, C should be reparented to A.
+	td := ptrace.NewTraces()
+	aSpan := addSpan(td, "A", newSpanID(1), emptySpanID, false)
+	idB := newSpanID(2)
+	arr := aSpan.Attributes().PutEmptySlice(collapsedSpanIDsKey)
+	arr.AppendEmpty().SetStr(hex.EncodeToString(idB[:]))
+
+	addSpan(td, "C", newSpanID(3), newSpanID(2), false)
+
+	p := newGhostSpanProcessor()
+	result, err := p.processTraces(context.Background(), td)
+	require.NoError(t, err)
+
+	assert.Equal(t, 2, result.SpanCount())
+
+	spans := collectSpans(result)
+	// C should be reparented to A.
+	assert.Equal(t, newSpanID(1), spans["C"].ParentSpanID())
+	// Collapsed attribute should be cleaned up.
+	_, hasAttr := spans["A"].Attributes().Get(collapsedSpanIDsKey)
+	assert.False(t, hasAttr, "collapsed_span_ids attribute should be removed")
+}
+
+func TestCollapsedAttributeCleanedUp(t *testing.T) {
+	// Even when no reparenting is needed, the collapsed attribute should be removed.
+	td := ptrace.NewTraces()
+	aSpan := addSpan(td, "A", newSpanID(1), emptySpanID, false)
+	idB := newSpanID(2)
+	arr := aSpan.Attributes().PutEmptySlice(collapsedSpanIDsKey)
+	arr.AppendEmpty().SetStr(hex.EncodeToString(idB[:]))
+
+	p := newGhostSpanProcessor()
+	result, err := p.processTraces(context.Background(), td)
+	require.NoError(t, err)
+
+	spans := collectSpans(result)
+	_, hasAttr := spans["A"].Attributes().Get(collapsedSpanIDsKey)
+	assert.False(t, hasAttr, "collapsed_span_ids attribute should be removed")
 }
 
 // collectSpans returns a map of span name -> span for easy assertions.
