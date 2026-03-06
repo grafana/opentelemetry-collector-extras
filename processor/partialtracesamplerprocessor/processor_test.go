@@ -500,14 +500,14 @@ func TestGhostSpanConversion(t *testing.T) {
 	assert.Equal(t, pcommon.SpanID(spanID), span.SpanID())
 	assert.Equal(t, pcommon.SpanID(parentSpanID), span.ParentSpanID())
 
-	// Timestamps and kinds are useful still.
-	assert.Equal(t, pcommon.Timestamp(1000), span.StartTimestamp())
-	assert.Equal(t, pcommon.Timestamp(2000), span.EndTimestamp())
+	// Timestamps are zeroed, kind preserved.
+	assert.Equal(t, pcommon.Timestamp(0), span.StartTimestamp())
+	assert.Equal(t, pcommon.Timestamp(0), span.EndTimestamp())
 	assert.Equal(t, ptrace.SpanKindServer, span.Kind())
 	assert.Equal(t, uint32(1), span.Flags())
 
-	// Name preserved for server spans, attributes replaced with ghost marker.
-	assert.Equal(t, "original-name", span.Name())
+	// Name replaced with generic ghost name, attributes replaced with ghost marker.
+	assert.Equal(t, ghostSpanName, span.Name())
 	assert.Equal(t, 1, span.Attributes().Len())
 	v, ok := span.Attributes().Get(ghostSpanAttributeKey)
 	assert.True(t, ok)

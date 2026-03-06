@@ -401,17 +401,11 @@ func (p *partialTraceSampler) decideSampling(ctx context.Context, rs ptrace.Reso
 }
 
 func convertToGhostSpan(span ptrace.Span, th sampling.Threshold) {
-	// Preserve: TraceID, SpanID, ParentSpanID, Kind (already set on the span)
-	// Preserve the original name for client, server, producer, and consumer spans
-	// so they remain useful in trace visualizations. Internal spans get a generic name.
-	switch span.Kind() {
-	case ptrace.SpanKindClient, ptrace.SpanKindServer, ptrace.SpanKindProducer, ptrace.SpanKindConsumer:
-		// keep original name and timestamps for visualization
-	default:
-		span.SetName(ghostSpanName)
-		span.SetStartTimestamp(0)
-		span.SetEndTimestamp(0)
-	}
+	// Preserve: TraceID, SpanID, ParentSpanID, Kind
+	// Strip name and timestamps from all ghost spans.
+	span.SetName(ghostSpanName)
+	span.SetStartTimestamp(0)
+	span.SetEndTimestamp(0)
 
 	span.Attributes().Clear()
 	span.Attributes().PutBool(ghostSpanAttributeKey, true)
