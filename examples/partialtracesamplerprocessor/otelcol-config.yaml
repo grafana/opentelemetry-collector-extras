@@ -9,15 +9,14 @@ receivers:
 processors:
   partialtracesampler:
     default_sampling_percentage: 10
-    ghost_spans: true
+    # ghost_spans: true
     rules:
-      # Keep root/server spans from the frontend service.
       - sampling_percentage: 100
-        condition: 'resource.attributes["service.name"] == "frontend" and kind == SPAN_KIND_SERVER'
-      # Keep leaf spans from payment and currency services to demonstrate
-      # sampled -> ghost -> sampled patterns (checkout spans become ghosts).
+        condition: 'resource.attributes["service.name"] == "payment"'
       - sampling_percentage: 100
-        condition: 'resource.attributes["service.name"] == "payment" or resource.attributes["service.name"] == "currency"'
+        condition: 'resource.attributes["service.name"] == "currency"'
+      - sampling_percentage: 100
+        condition: 'resource.attributes["service.name"] == "checkout"'
 
   groupbytrace:
     wait_duration: 5s
