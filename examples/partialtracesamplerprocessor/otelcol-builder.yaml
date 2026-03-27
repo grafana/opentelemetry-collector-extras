@@ -1,0 +1,21 @@
+dist:
+  name: otelcol-custom
+  output_path: /build/otelcol-custom
+  otelcol_version: 0.146.1
+
+receivers:
+  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.146.1
+
+processors:
+  - gomod: github.com/grafana/opentelemetry-collector-extras/processor/partialtracesamplerprocessor v0.0.0
+  - gomod: github.com/grafana/opentelemetry-collector-extras/processor/ghostspanprocessor v0.0.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/groupbytraceprocessor v0.146.0
+  - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.146.1
+
+exporters:
+  - gomod: go.opentelemetry.io/collector/exporter/otlpexporter v0.146.1
+  - gomod: go.opentelemetry.io/collector/exporter/debugexporter v0.146.1
+
+replaces:
+  - github.com/grafana/opentelemetry-collector-extras/processor/partialtracesamplerprocessor => /build/processor/partialtracesamplerprocessor
+  - github.com/grafana/opentelemetry-collector-extras/processor/ghostspanprocessor => /build/processor/ghostspanprocessor

@@ -1,0 +1,52 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  partialtracesampler:
+    default_sampling_percentage: 10
+    # ghost_spans: true
+    rules:
+      - sampling_percentage: 100
+        condition: 'resource.attributes["service.name"] == "payment"'
+      - sampling_percentage: 100
+        condition: 'resource.attributes["service.name"] == "currency"'
+      - sampling_percentage: 100
+        condition: 'resource.attributes["service.name"] == "checkout"'
+
+  groupbytrace:
+    wait_duration: 5s
+
+  ghostspan:
+
+  batch:
+
+exporters:
+  otlp:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
+  debug:
+    verbosity: basic
+
+service:
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
+                without_type_suffix: true
+                without_units: true
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [partialtracesampler, groupbytrace, ghostspan, batch]
+      exporters: [otlp, debug]
