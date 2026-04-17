@@ -80,16 +80,11 @@ func (*spanPruningProcessor) buildAggregationPlan(groups map[string]aggregationG
 	return aggregationPlan{groups: groupSlice}
 }
 
-// executeAggregations performs the top-down creation of summary spans, batch
-// removes originals, and returns the number of pruned spans.
-func (p *spanPruningProcessor) executeAggregations(plan aggregationPlan) int {
-	// Track which parent SpanID should map to which summary SpanID
-	parentReplacements := make(map[pcommon.SpanID]pcommon.SpanID, len(plan.groups)*4)
-
-	// Track spans to remove per ScopeSpans for batch removal
-	spansToRemove := make(map[ptrace.ScopeSpans]map[pcommon.SpanID]struct{}, len(plan.groups))
+// executeAggregations performs the top-down creation of summary spans, removes
+// originals using the tree's markedForRemoval flags, and returns the number of
+// pruned spans.
+func (p *spanPruningProcessor) executeAggregations(plan aggregationPlan, tree *traceTree) int {
 	prunedCount := 0
-
 	prefix := p.config.AggregationAttributePrefix
 
 	for i := range plan.groups {
@@ -97,48 +92,45 @@ func (p *spanPruningProcessor) executeAggregations(plan aggregationPlan) int {
 		// Calculate statistics and time range in single pass
 		data := p.calculateAggregationData(group.nodes)
 
-		// Determine the parent SpanID for the summary span
-		// Use the first node's parent as template
-		originalParentID := group.nodes[0].span.ParentSpanID()
-
-		// Check if the parent is being replaced by a summary span
-		summaryParentID := originalParentID
-		if replacementID, exists := parentReplacements[originalParentID]; exists {
-			summaryParentID = replacementID
+		// Determine the parent SpanID for the summary span.
+		// Walk the tree: if the parent node was already replaced by a summary
+		// span (from a higher-depth group), use that replacement ID.
+		summaryParentID := group.nodes[0].span.ParentSpanID()
+		if parentNode := group.nodes[0].parent; parentNode != nil && !parentNode.replacementSpanID.IsEmpty() {
+			summaryParentID = parentNode.replacementSpanID
 		}
 
 		// Create summary span with correct parent
 		p.createSummarySpanWithParent(*group, data, summaryParentID)
 
 		// Mark preserved outliers with reference to summary span
-		if len(group.preservedOutliers) > 0 {
-			for _, outlier := range group.preservedOutliers {
-				// Outliers become siblings of the summary span
-				outlier.span.SetParentSpanID(summaryParentID)
-				outlier.span.Attributes().PutBool(prefix+"is_preserved_outlier", true)
-				outlier.span.Attributes().PutStr(prefix+"summary_span_id",
-					group.summarySpanID.String())
-			}
+		for _, outlier := range group.preservedOutliers {
+			// Outliers become siblings of the summary span
+			outlier.span.SetParentSpanID(summaryParentID)
+			outlier.span.Attributes().PutBool(prefix+"is_preserved_outlier", true)
+			outlier.span.Attributes().PutStr(prefix+"summary_span_id",
+				group.summarySpanID.String())
 		}
 
-		// Record that these original span IDs should be replaced by the summary span ID
+		// Record replacement span ID on each node so child groups can find it
 		for _, node := range group.nodes {
-			spanID := node.span.SpanID()
-			parentReplacements[spanID] = group.summarySpanID
-			scopeSpans := node.scopeSpans
-			if spansToRemove[scopeSpans] == nil {
-				spansToRemove[scopeSpans] = make(map[pcommon.SpanID]struct{}, min(len(group.nodes), scopeSpans.Spans().Len()))
-			}
-			spansToRemove[scopeSpans][spanID] = struct{}{}
+			node.replacementSpanID = group.summarySpanID
 		}
 		prunedCount += len(group.nodes)
 	}
 
-	// Batch remove all marked spans in a single pass per ScopeSpans
-	for scopeSpans, spanIDs := range spansToRemove {
+	// Collect unique ScopeSpans that contain marked nodes, then remove in a
+	// single pass per ScopeSpans using the tree's flags set during analysis.
+	seen := make(map[ptrace.ScopeSpans]struct{})
+	for _, node := range tree.nodeByID {
+		if node.markedForRemoval {
+			seen[node.scopeSpans] = struct{}{}
+		}
+	}
+	for scopeSpans := range seen {
 		scopeSpans.Spans().RemoveIf(func(span ptrace.Span) bool {
-			_, shouldRemove := spanIDs[span.SpanID()]
-			return shouldRemove
+			n, ok := tree.nodeByID[span.SpanID()]
+			return ok && n.markedForRemoval
 		})
 	}
 

@@ -16,10 +16,11 @@ type spanNode struct {
 	scopeSpans         ptrace.ScopeSpans
 	parent             *spanNode
 	children           []*spanNode
-	groupKey           string // cached group key for leaf spans
-	isLeaf             bool   // true if node has no children
-	markedForRemoval   bool   // true if node will be aggregated
-	isPreservedOutlier bool   // true if preserved as outlier (not aggregated)
+	groupKey           string         // cached group key for leaf spans
+	replacementSpanID  pcommon.SpanID // summary span ID that replaced this node's group
+	isLeaf             bool           // true if node has no children
+	markedForRemoval   bool           // true if node will be aggregated
+	isPreservedOutlier bool           // true if preserved as outlier (not aggregated)
 }
 
 // traceTree holds span nodes indexed by ID plus quick leaf/orphan lists for
