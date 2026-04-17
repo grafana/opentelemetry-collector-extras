@@ -16,9 +16,9 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 
+	"github.com/grafana/opentelemetry-collector-extras/processor/spanpruningprocessor/internal/metadata"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl/contexts/ottlspan"
-	"github.com/grafana/opentelemetry-collector-extras/processor/spanpruningprocessor/internal/metadata"
 )
 
 // spanInfo pairs a span with its ScopeSpans and ResourceSpans containers for in-place edits

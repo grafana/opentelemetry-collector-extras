@@ -127,7 +127,7 @@ func (p *spanPruningProcessor) executeAggregations(plan aggregationPlan) int {
 			parentReplacements[spanID] = group.summarySpanID
 			scopeSpans := node.scopeSpans
 			if spansToRemove[scopeSpans] == nil {
-				spansToRemove[scopeSpans] = make(map[pcommon.SpanID]struct{}, len(group.nodes))
+				spansToRemove[scopeSpans] = make(map[pcommon.SpanID]struct{}, min(len(group.nodes), scopeSpans.Spans().Len()))
 			}
 			spansToRemove[scopeSpans][spanID] = struct{}{}
 		}
