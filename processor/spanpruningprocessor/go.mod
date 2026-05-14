@@ -11,7 +11,7 @@ require (
 	go.opentelemetry.io/collector/confmap v1.52.0
 	go.opentelemetry.io/collector/consumer v1.52.0
 	go.opentelemetry.io/collector/consumer/consumertest v0.146.1
-	go.opentelemetry.io/collector/pdata v1.52.0
+	go.opentelemetry.io/collector/pdata v1.58.0
 	go.opentelemetry.io/collector/processor v1.52.0
 	go.opentelemetry.io/collector/processor/processorhelper v0.146.1
 	go.opentelemetry.io/collector/processor/processortest v0.146.1
@@ -36,7 +36,7 @@ require (
 	github.com/goccy/go-json v0.10.5 // indirect
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/hashicorp/go-version v1.8.0 // indirect
+	github.com/hashicorp/go-version v1.9.0 // indirect
 	github.com/hashicorp/golang-lru v0.5.4 // indirect
 	github.com/iancoleman/strcase v0.3.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
@@ -57,7 +57,7 @@ require (
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/collector/component/componentstatus v0.146.1 // indirect
 	go.opentelemetry.io/collector/consumer/xconsumer v0.146.1 // indirect
-	go.opentelemetry.io/collector/featuregate v1.52.0 // indirect
+	go.opentelemetry.io/collector/featuregate v1.58.0 // indirect
 	go.opentelemetry.io/collector/internal/componentalias v0.146.1 // indirect
 	go.opentelemetry.io/collector/pdata/pprofile v0.146.1 // indirect
 	go.opentelemetry.io/collector/pdata/testdata v0.146.1 // indirect
@@ -68,7 +68,7 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/exp v0.0.0-20240506185415-9bf2ced13842 // indirect
-	golang.org/x/net v0.48.0 // indirect
+	golang.org/x/net v0.51.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.34.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
