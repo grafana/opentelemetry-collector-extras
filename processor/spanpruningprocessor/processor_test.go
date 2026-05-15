@@ -322,7 +322,7 @@ func TestBytesMetrics_Enabled(t *testing.T) {
 		metricdatatest.IgnoreValue()) // Just verify metric exists
 
 	// Verify bytes_matched metric was recorded (value > 0)
-	metadatatest.AssertEqualProcessorSpanpruningBytesMatched(t, testTel,
+	metadatatest.AssertEqualProcessorSpanpruningBytesProcessed(t, testTel,
 		[]metricdata.DataPoint[int64]{{}},
 		metricdatatest.IgnoreTimestamp(),
 		metricdatatest.IgnoreValue()) // Just verify metric exists
@@ -356,7 +356,7 @@ func TestBytesMetrics_Disabled(t *testing.T) {
 	assert.Error(t, err, "bytes_emitted metric should not exist when disabled")
 
 	// Verify bytes_matched metric was NOT recorded
-	_, err = testTel.GetMetric("otelcol_processor_spanpruning_bytes_matched")
+	_, err = testTel.GetMetric("otelcol_processor_spanpruning_bytes_processed")
 	assert.Error(t, err, "bytes_matched metric should not exist when disabled")
 }
 
@@ -381,7 +381,7 @@ func TestBytesMetrics_MatchedEqualsReceivedWithNoConditions(t *testing.T) {
 
 	receivedMetric, err := testTel.GetMetric("otelcol_processor_spanpruning_bytes_received")
 	require.NoError(t, err)
-	matchedMetric, err := testTel.GetMetric("otelcol_processor_spanpruning_bytes_matched")
+	matchedMetric, err := testTel.GetMetric("otelcol_processor_spanpruning_bytes_processed")
 	require.NoError(t, err)
 
 	receivedSum, ok := receivedMetric.Data.(metricdata.Sum[int64])
@@ -432,7 +432,7 @@ func TestBytesMetrics_MatchedWithConditions(t *testing.T) {
 
 	receivedMetric, err := testTel.GetMetric("otelcol_processor_spanpruning_bytes_received")
 	require.NoError(t, err)
-	matchedMetric, err := testTel.GetMetric("otelcol_processor_spanpruning_bytes_matched")
+	matchedMetric, err := testTel.GetMetric("otelcol_processor_spanpruning_bytes_processed")
 	require.NoError(t, err)
 
 	receivedSum, ok := receivedMetric.Data.(metricdata.Sum[int64])
@@ -471,7 +471,7 @@ func TestBytesMetrics_MatchedZeroWhenNoTracesMatchConditions(t *testing.T) {
 	err = tp.ConsumeTraces(t.Context(), td)
 	require.NoError(t, err)
 
-	_, err = testTel.GetMetric("otelcol_processor_spanpruning_bytes_matched")
+	_, err = testTel.GetMetric("otelcol_processor_spanpruning_bytes_processed")
 	assert.Error(t, err, "bytes_matched metric should not be recorded when no traces match conditions")
 }
 

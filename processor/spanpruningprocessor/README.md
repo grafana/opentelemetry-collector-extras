@@ -648,7 +648,7 @@ The processor emits the following metrics to help monitor its operation:
 | `otelcol_processor_spanpruning_outliers_preserved` | Total outlier spans kept as individual spans (when `preserve_outliers: true`) |
 | `otelcol_processor_spanpruning_outliers_correlations_detected` | Total aggregation groups where outliers had correlated attributes |
 | `otelcol_processor_spanpruning_bytes_received` | Total bytes of serialized traces received (when `enable_bytes_metrics: true`) |
-| `otelcol_processor_spanpruning_bytes_matched` | Total bytes of serialized traces that matched pruning conditions (when `enable_bytes_metrics: true`) |
+| `otelcol_processor_spanpruning_bytes_processed` | Total bytes of serialized traces that matched pruning conditions (when `enable_bytes_metrics: true`) |
 | `otelcol_processor_spanpruning_bytes_emitted` | Total bytes of serialized traces emitted after pruning (when `enable_bytes_metrics: true`) |
 
 ### Histograms

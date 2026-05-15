@@ -106,8 +106,8 @@ func (p *spanPruningProcessor) processTraces(ctx context.Context, td ptrace.Trac
 
 	// Measure bytes received before processing
 	if p.enableBytesMetrics {
-		var m ptrace.ProtoMarshaler
-		p.telemetryBuilder.ProcessorSpanpruningBytesReceived.Add(ctx, int64(m.TracesSize(td)))
+		var marshaler ptrace.ProtoMarshaler
+		p.telemetryBuilder.ProcessorSpanpruningBytesReceived.Add(ctx, int64(marshaler.TracesSize(td)))
 	}
 
 	// Count incoming spans
@@ -126,7 +126,7 @@ func (p *spanPruningProcessor) processTraces(ctx context.Context, td ptrace.Trac
 	var bytesMatched int64
 	if p.enableBytesMetrics {
 		// Measure matched traces before pruning so bytes_matched reflects pre-pruning size.
-		bytesMatched = p.getBytes(matchedTraces, traceSpans)
+		bytesMatched = p.getBytes(ctx, matchedTraces, traceSpans)
 	}
 
 	// Process each trace independently
@@ -146,14 +146,13 @@ func (p *spanPruningProcessor) processTraces(ctx context.Context, td ptrace.Trac
 		p.telemetryBuilder.ProcessorSpanpruningTracesSkipped.Add(ctx, tracesSkipped)
 	}
 
-	// Measure bytes emitted after processing
+	// Measure bytes emitted after pruning to capture the reduction in trace size.
 	if p.enableBytesMetrics {
+		var marshaler ptrace.ProtoMarshaler
 		if bytesMatched > 0 {
-			p.telemetryBuilder.ProcessorSpanpruningBytesMatched.Add(ctx, bytesMatched)
+			p.telemetryBuilder.ProcessorSpanpruningBytesProcessed.Add(ctx, bytesMatched)
 		}
-
-		var m ptrace.ProtoMarshaler
-		p.telemetryBuilder.ProcessorSpanpruningBytesEmitted.Add(ctx, int64(m.TracesSize(td)))
+		p.telemetryBuilder.ProcessorSpanpruningBytesEmitted.Add(ctx, int64(marshaler.TracesSize(td)))
 	}
 
 	return td, nil
@@ -179,7 +178,7 @@ func (p *spanPruningProcessor) filterTracesByConditions(ctx context.Context, tra
 
 // getBytes returns the serialized size of the subset of traces identified
 // by matchedTraces, preserving the original ResourceSpans/ScopeSpans hierarchy.
-func (p *spanPruningProcessor) getBytes(matchedTraces map[pcommon.TraceID]struct{}, traceSpans map[pcommon.TraceID][]spanInfo) int64 {
+func (p *spanPruningProcessor) getBytes(_ context.Context, matchedTraces map[pcommon.TraceID]struct{}, traceSpans map[pcommon.TraceID][]spanInfo) int64 {
 	filtered := ptrace.NewTraces()
 	// Track already-added ResourceSpans and ScopeSpans by their original object
 	// identity to preserve the original hierarchy (same RS/SS grouping).
