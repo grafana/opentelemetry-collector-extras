@@ -68,6 +68,22 @@ func AssertEqualProcessorSpanpruningBytesEmitted(t *testing.T, tt *componenttest
 	metricdatatest.AssertEqual(t, want, got, opts...)
 }
 
+func AssertEqualProcessorSpanpruningBytesProcessed(t *testing.T, tt *componenttest.Telemetry, dps []metricdata.DataPoint[int64], opts ...metricdatatest.Option) {
+	want := metricdata.Metrics{
+		Name:        "otelcol_processor_spanpruning_bytes_processed",
+		Description: "Total bytes of serialized traces that were processed [Development]",
+		Unit:        "By",
+		Data: metricdata.Sum[int64]{
+			Temporality: metricdata.CumulativeTemporality,
+			IsMonotonic: true,
+			DataPoints:  dps,
+		},
+	}
+	got, err := tt.GetMetric("otelcol_processor_spanpruning_bytes_processed")
+	require.NoError(t, err)
+	metricdatatest.AssertEqual(t, want, got, opts...)
+}
+
 func AssertEqualProcessorSpanpruningBytesReceived(t *testing.T, tt *componenttest.Telemetry, dps []metricdata.DataPoint[int64], opts ...metricdatatest.Option) {
 	want := metricdata.Metrics{
 		Name:        "otelcol_processor_spanpruning_bytes_received",

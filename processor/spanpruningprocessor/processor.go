@@ -16,9 +16,10 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 
-	"github.com/grafana/opentelemetry-collector-extras/processor/spanpruningprocessor/internal/metadata"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl/contexts/ottlspan"
+
+	"github.com/grafana/opentelemetry-collector-extras/processor/spanpruningprocessor/internal/metadata"
 )
 
 // spanInfo pairs a span with its ScopeSpans and ResourceSpans containers for in-place edits
@@ -121,19 +122,18 @@ func (p *spanPruningProcessor) processTraces(ctx context.Context, td ptrace.Trac
 
 	// Group spans by TraceID
 	traceSpans := p.groupSpansByTraceID(td)
+	matchedTraces, tracesSkipped := p.filterTracesByConditions(ctx, traceSpans)
+
+	var bytesMatched int64
+	if p.enableBytesMetrics {
+		// Measure matched traces before pruning so bytes_matched reflects pre-pruning size.
+		bytesMatched = p.getBytes(ctx, matchedTraces, traceSpans)
+	}
 
 	// Process each trace independently
 	tracesProcessed := int64(0)
-	tracesSkipped := int64(0)
-	for _, spans := range traceSpans {
-		// Check if trace matches conditions before pruning
-		// When conditions is nil, all traces match (current behavior preserved)
-		// When conditions is set, only traces with at least one matching span are pruned
-		if !p.traceMatchesConditions(ctx, spans) {
-			tracesSkipped++
-			continue // Skip pruning for traces that don't match conditions
-		}
-		p.processTrace(ctx, spans)
+	for traceID := range matchedTraces {
+		p.processTrace(ctx, traceSpans[traceID])
 		tracesProcessed++
 	}
 
@@ -147,13 +147,67 @@ func (p *spanPruningProcessor) processTraces(ctx context.Context, td ptrace.Trac
 		p.telemetryBuilder.ProcessorSpanpruningTracesSkipped.Add(ctx, tracesSkipped)
 	}
 
-	// Measure bytes emitted after processing
+	// Measure bytes emitted after pruning to capture the reduction in trace size.
 	if p.enableBytesMetrics {
 		var m ptrace.ProtoMarshaler
+		if bytesMatched > 0 {
+			p.telemetryBuilder.ProcessorSpanpruningBytesProcessed.Add(ctx, bytesMatched)
+		}
 		p.telemetryBuilder.ProcessorSpanpruningBytesEmitted.Add(ctx, int64(m.TracesSize(td)))
 	}
 
 	return td, nil
+}
+
+// filterTracesByConditions evaluates conditions against every trace in traceSpans and
+// returns the set of matching TraceIDs alongside a count of skipped traces.
+// When no conditions are configured, every trace matches.
+func (p *spanPruningProcessor) filterTracesByConditions(ctx context.Context, traceSpans map[pcommon.TraceID][]spanInfo) (map[pcommon.TraceID]struct{}, int64) {
+	matched := make(map[pcommon.TraceID]struct{})
+	var skipped int64
+	for traceID, spans := range traceSpans {
+		// When conditions is nil, all traces match (current behavior preserved)
+		// When conditions is set, only traces with at least one matching span are pruned
+		if !p.traceMatchesConditions(ctx, spans) {
+			skipped++
+			continue
+		}
+		matched[traceID] = struct{}{}
+	}
+	return matched, skipped
+}
+
+// getBytes returns the serialized size of the subset of traces identified
+// by matchedTraces, preserving the original ResourceSpans/ScopeSpans hierarchy.
+func (p *spanPruningProcessor) getBytes(_ context.Context, matchedTraces map[pcommon.TraceID]struct{}, traceSpans map[pcommon.TraceID][]spanInfo) int64 {
+	filtered := ptrace.NewTraces()
+	// Track already-added ResourceSpans and ScopeSpans by their original object
+	// identity to preserve the original hierarchy (same RS/SS grouping).
+	// pdata structs hold a pointer to the underlying proto, so struct equality
+	// gives pointer identity for free.
+	rsMap := make(map[ptrace.ResourceSpans]ptrace.ResourceSpans)
+	ssMap := make(map[ptrace.ScopeSpans]ptrace.ScopeSpans)
+	for traceID := range matchedTraces {
+		for _, si := range traceSpans[traceID] {
+			filtRS, ok := rsMap[si.resourceSpans]
+			if !ok {
+				filtRS = filtered.ResourceSpans().AppendEmpty()
+				si.resourceSpans.Resource().CopyTo(filtRS.Resource())
+				filtRS.SetSchemaUrl(si.resourceSpans.SchemaUrl())
+				rsMap[si.resourceSpans] = filtRS
+			}
+			filtSS, ok := ssMap[si.scopeSpans]
+			if !ok {
+				filtSS = filtRS.ScopeSpans().AppendEmpty()
+				si.scopeSpans.Scope().CopyTo(filtSS.Scope())
+				filtSS.SetSchemaUrl(si.scopeSpans.SchemaUrl())
+				ssMap[si.scopeSpans] = filtSS
+			}
+			si.span.CopyTo(filtSS.Spans().AppendEmpty())
+		}
+	}
+	var m ptrace.ProtoMarshaler
+	return int64(m.TracesSize(filtered))
 }
 
 // groupSpansByTraceID flattens incoming data into a TraceID-indexed map so

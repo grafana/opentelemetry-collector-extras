@@ -29,6 +29,7 @@ type TelemetryBuilder struct {
 	ProcessorSpanpruningAggregationGroupSize         metric.Int64Histogram
 	ProcessorSpanpruningAggregationsCreated          metric.Int64Counter
 	ProcessorSpanpruningBytesEmitted                 metric.Int64Counter
+	ProcessorSpanpruningBytesProcessed                 metric.Int64Counter
 	ProcessorSpanpruningBytesReceived                metric.Int64Counter
 	ProcessorSpanpruningLeafAttributeDiversityLoss   metric.Int64Histogram
 	ProcessorSpanpruningLeafAttributeLoss            metric.Int64Histogram
@@ -88,6 +89,12 @@ func NewTelemetryBuilder(settings component.TelemetrySettings, options ...Teleme
 	builder.ProcessorSpanpruningBytesEmitted, err = builder.meter.Int64Counter(
 		"otelcol_processor_spanpruning_bytes_emitted",
 		metric.WithDescription("Total bytes of serialized traces emitted after pruning [Development]"),
+		metric.WithUnit("By"),
+	)
+	errs = errors.Join(errs, err)
+	builder.ProcessorSpanpruningBytesProcessed, err = builder.meter.Int64Counter(
+		"otelcol_processor_spanpruning_bytes_processed",
+		metric.WithDescription("Total bytes of serialized traces that were processed [Development]"),
 		metric.WithUnit("By"),
 	)
 	errs = errors.Join(errs, err)

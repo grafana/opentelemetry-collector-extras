@@ -92,7 +92,7 @@ processors:
     attribute_loss_exemplar_sample_rate: 0.01
 
     # Enable measurement of serialized trace sizes before and after pruning
-    # When enabled, records bytes_received and bytes_emitted metrics
+    # When enabled, records bytes_received, bytes_processed, and bytes_emitted metrics
     # This requires serializing the trace data which can be expensive for large batches
     # Default: false
     enable_bytes_metrics: false
@@ -173,7 +173,7 @@ processors:
 | `aggregation_histogram_buckets` | []time.Duration | `[5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2.5s, 5s, 10s]` | Upper bounds for histogram buckets |
 | `enable_attribute_loss_analysis` | bool | false | Enable attribute loss analysis (adds metrics and span attributes showing attribute differences) |
 | `attribute_loss_exemplar_sample_rate` | float64 | 0.01 | Fraction of attribute-loss metric recordings that include trace exemplars (0.0–1.0). Only applies when `enable_attribute_loss_analysis` is true. |
-| `enable_bytes_metrics` | bool | false | Enable measurement of serialized trace sizes (bytes_received/bytes_emitted metrics) |
+| `enable_bytes_metrics` | bool | false | Enable measurement of serialized trace sizes (bytes_received/bytes_processed/bytes_emitted metrics) |
 | `enable_outlier_analysis` | bool | false | Enable outlier detection and correlation analysis |
 | `outlier_analysis.method` | string | "iqr" | Statistical method: "iqr" or "mad" |
 | `outlier_analysis.iqr_multiplier` | float64 | 1.5 | IQR threshold multiplier (when method=iqr) |
@@ -648,6 +648,7 @@ The processor emits the following metrics to help monitor its operation:
 | `otelcol_processor_spanpruning_outliers_preserved` | Total outlier spans kept as individual spans (when `preserve_outliers: true`) |
 | `otelcol_processor_spanpruning_outliers_correlations_detected` | Total aggregation groups where outliers had correlated attributes |
 | `otelcol_processor_spanpruning_bytes_received` | Total bytes of serialized traces received (when `enable_bytes_metrics: true`) |
+| `otelcol_processor_spanpruning_bytes_processed` | Total bytes of serialized traces that matched pruning conditions (when `enable_bytes_metrics: true`) |
 | `otelcol_processor_spanpruning_bytes_emitted` | Total bytes of serialized traces emitted after pruning (when `enable_bytes_metrics: true`) |
 
 ### Histograms

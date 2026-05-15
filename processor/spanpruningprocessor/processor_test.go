@@ -320,6 +320,12 @@ func TestBytesMetrics_Enabled(t *testing.T) {
 		[]metricdata.DataPoint[int64]{{}},
 		metricdatatest.IgnoreTimestamp(),
 		metricdatatest.IgnoreValue()) // Just verify metric exists
+
+	// Verify bytes_matched metric was recorded (value > 0)
+	metadatatest.AssertEqualProcessorSpanpruningBytesProcessed(t, testTel,
+		[]metricdata.DataPoint[int64]{{}},
+		metricdatatest.IgnoreTimestamp(),
+		metricdatatest.IgnoreValue()) // Just verify metric exists
 }
 
 // TestBytesMetrics_Disabled tests that bytes metrics are NOT recorded when disabled (default)
@@ -348,6 +354,125 @@ func TestBytesMetrics_Disabled(t *testing.T) {
 	// Verify bytes_emitted metric was NOT recorded
 	_, err = testTel.GetMetric("otelcol_processor_spanpruning_bytes_emitted")
 	assert.Error(t, err, "bytes_emitted metric should not exist when disabled")
+
+	// Verify bytes_matched metric was NOT recorded
+	_, err = testTel.GetMetric("otelcol_processor_spanpruning_bytes_processed")
+	assert.Error(t, err, "bytes_matched metric should not exist when disabled")
+}
+
+// TestBytesMetrics_MatchedEqualsReceivedWithNoConditions verifies that when no
+// conditions are configured every trace matches, so bytes_matched == bytes_received.
+func TestBytesMetrics_MatchedEqualsReceivedWithNoConditions(t *testing.T) {
+	testTel := componenttest.NewTelemetry()
+	defer func() { require.NoError(t, testTel.Shutdown(t.Context())) }()
+
+	factory := NewFactory()
+	cfg := factory.CreateDefaultConfig().(*Config)
+	cfg.MinSpansToAggregate = 2
+	cfg.EnableBytesMetrics = true
+	// No conditions — all traces should match.
+
+	tp, err := factory.CreateTraces(t.Context(), metadatatest.NewSettings(testTel), cfg, consumertest.NewNop())
+	require.NoError(t, err)
+
+	td := createTestTraceWithLeafSpans(t, 3, "SELECT", map[string]string{"db.operation": "select"})
+	err = tp.ConsumeTraces(t.Context(), td)
+	require.NoError(t, err)
+
+	receivedMetric, err := testTel.GetMetric("otelcol_processor_spanpruning_bytes_received")
+	require.NoError(t, err)
+	matchedMetric, err := testTel.GetMetric("otelcol_processor_spanpruning_bytes_processed")
+	require.NoError(t, err)
+
+	receivedSum, ok := receivedMetric.Data.(metricdata.Sum[int64])
+	require.True(t, ok)
+	require.Len(t, receivedSum.DataPoints, 1)
+
+	matchedSum, ok := matchedMetric.Data.(metricdata.Sum[int64])
+	require.True(t, ok)
+	require.Len(t, matchedSum.DataPoints, 1)
+
+	require.Greater(t, receivedSum.DataPoints[0].Value, int64(0))
+	require.Equal(t, receivedSum.DataPoints[0].Value, matchedSum.DataPoints[0].Value,
+		"bytes_matched should equal bytes_received when no conditions are configured")
+}
+
+// TestBytesMetrics_MatchedWithConditions tests bytes_matched tracks only traces
+// that pass OTTL conditions.
+func TestBytesMetrics_MatchedWithConditions(t *testing.T) {
+	testTel := componenttest.NewTelemetry()
+	defer func() { require.NoError(t, testTel.Shutdown(t.Context())) }()
+
+	factory := NewFactory()
+	cfg := factory.CreateDefaultConfig().(*Config)
+	cfg.MinSpansToAggregate = 2
+	cfg.EnableBytesMetrics = true
+	cfg.Conditions = []string{`resource.attributes["service.name"] == "loki-query-engine"`}
+
+	tp, err := factory.CreateTraces(t.Context(), metadatatest.NewSettings(testTel), cfg, consumertest.NewNop())
+	require.NoError(t, err)
+
+	td := ptrace.NewTraces()
+	matchingTrace := createTestTraceWithResourceAttr(t, "loki-query-engine", 3)
+	nonMatchingTrace := createTestTraceWithResourceAttr(t, "other-service", 3)
+	// Ensure the traces have different trace IDs; helper data uses a fixed ID.
+	for i := 0; i < nonMatchingTrace.ResourceSpans().Len(); i++ {
+		for j := 0; j < nonMatchingTrace.ResourceSpans().At(i).ScopeSpans().Len(); j++ {
+			spans := nonMatchingTrace.ResourceSpans().At(i).ScopeSpans().At(j).Spans()
+			for k := 0; k < spans.Len(); k++ {
+				spans.At(k).SetTraceID(pcommon.TraceID([16]byte{9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9}))
+			}
+		}
+	}
+	matchingTrace.ResourceSpans().At(0).CopyTo(td.ResourceSpans().AppendEmpty())
+	nonMatchingTrace.ResourceSpans().At(0).CopyTo(td.ResourceSpans().AppendEmpty())
+
+	err = tp.ConsumeTraces(t.Context(), td)
+	require.NoError(t, err)
+
+	receivedMetric, err := testTel.GetMetric("otelcol_processor_spanpruning_bytes_received")
+	require.NoError(t, err)
+	matchedMetric, err := testTel.GetMetric("otelcol_processor_spanpruning_bytes_processed")
+	require.NoError(t, err)
+
+	receivedSum, ok := receivedMetric.Data.(metricdata.Sum[int64])
+	require.True(t, ok)
+	require.Len(t, receivedSum.DataPoints, 1)
+
+	matchedSum, ok := matchedMetric.Data.(metricdata.Sum[int64])
+	require.True(t, ok)
+	require.Len(t, matchedSum.DataPoints, 1)
+
+	receivedBytes := receivedSum.DataPoints[0].Value
+	matchedBytes := matchedSum.DataPoints[0].Value
+
+	require.Greater(t, receivedBytes, int64(0))
+	require.Greater(t, matchedBytes, int64(0))
+	require.Less(t, matchedBytes, receivedBytes)
+}
+
+// TestBytesMetrics_MatchedZeroWhenNoTracesMatchConditions verifies that
+// bytes_matched is not recorded when conditions are set but no trace matches.
+func TestBytesMetrics_MatchedZeroWhenNoTracesMatchConditions(t *testing.T) {
+	testTel := componenttest.NewTelemetry()
+	defer func() { require.NoError(t, testTel.Shutdown(t.Context())) }()
+
+	factory := NewFactory()
+	cfg := factory.CreateDefaultConfig().(*Config)
+	cfg.MinSpansToAggregate = 2
+	cfg.EnableBytesMetrics = true
+	cfg.Conditions = []string{`resource.attributes["service.name"] == "loki-query-engine"`}
+
+	tp, err := factory.CreateTraces(t.Context(), metadatatest.NewSettings(testTel), cfg, consumertest.NewNop())
+	require.NoError(t, err)
+
+	// All spans belong to a non-matching service — zero traces should match.
+	td := createTestTraceWithResourceAttr(t, "other-service", 3)
+	err = tp.ConsumeTraces(t.Context(), td)
+	require.NoError(t, err)
+
+	_, err = testTel.GetMetric("otelcol_processor_spanpruning_bytes_processed")
+	assert.Error(t, err, "bytes_matched metric should not be recorded when no traces match conditions")
 }
 
 // TestOutlierMetrics_IQR tests that outlier metrics are recorded correctly with IQR method
