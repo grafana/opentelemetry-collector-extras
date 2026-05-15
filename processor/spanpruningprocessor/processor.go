@@ -16,9 +16,10 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 
-	"github.com/grafana/opentelemetry-collector-extras/processor/spanpruningprocessor/internal/metadata"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl/contexts/ottlspan"
+
+	"github.com/grafana/opentelemetry-collector-extras/processor/spanpruningprocessor/internal/metadata"
 )
 
 // spanInfo pairs a span with its ScopeSpans and ResourceSpans containers for in-place edits
@@ -106,8 +107,8 @@ func (p *spanPruningProcessor) processTraces(ctx context.Context, td ptrace.Trac
 
 	// Measure bytes received before processing
 	if p.enableBytesMetrics {
-		var marshaler ptrace.ProtoMarshaler
-		p.telemetryBuilder.ProcessorSpanpruningBytesReceived.Add(ctx, int64(marshaler.TracesSize(td)))
+		var m ptrace.ProtoMarshaler
+		p.telemetryBuilder.ProcessorSpanpruningBytesReceived.Add(ctx, int64(m.TracesSize(td)))
 	}
 
 	// Count incoming spans
@@ -148,11 +149,11 @@ func (p *spanPruningProcessor) processTraces(ctx context.Context, td ptrace.Trac
 
 	// Measure bytes emitted after pruning to capture the reduction in trace size.
 	if p.enableBytesMetrics {
-		var marshaler ptrace.ProtoMarshaler
+		var m ptrace.ProtoMarshaler
 		if bytesMatched > 0 {
 			p.telemetryBuilder.ProcessorSpanpruningBytesProcessed.Add(ctx, bytesMatched)
 		}
-		p.telemetryBuilder.ProcessorSpanpruningBytesEmitted.Add(ctx, int64(marshaler.TracesSize(td)))
+		p.telemetryBuilder.ProcessorSpanpruningBytesEmitted.Add(ctx, int64(m.TracesSize(td)))
 	}
 
 	return td, nil

@@ -33,7 +33,7 @@ telemetry:
 
     processor_spanpruning_bytes_processed:
       enabled: false
-      description: Total bytes of serialized traces that match pruning conditions
+      description: Total bytes of serialized traces that were processed
       unit: "By"
       stability: { level: development }
       sum: { value_type: int, monotonic: true }

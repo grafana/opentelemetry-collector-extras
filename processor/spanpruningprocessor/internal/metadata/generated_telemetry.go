@@ -94,7 +94,7 @@ func NewTelemetryBuilder(settings component.TelemetrySettings, options ...Teleme
 	errs = errors.Join(errs, err)
 	builder.ProcessorSpanpruningBytesProcessed, err = builder.meter.Int64Counter(
 		"otelcol_processor_spanpruning_bytes_processed",
-		metric.WithDescription("Total bytes of serialized traces that match pruning conditions [Development]"),
+		metric.WithDescription("Total bytes of serialized traces that were processed [Development]"),
 		metric.WithUnit("By"),
 	)
 	errs = errors.Join(errs, err)
