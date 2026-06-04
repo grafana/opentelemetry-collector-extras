@@ -648,11 +648,11 @@ The processor emits the following metrics to help monitor its operation:
 | `otelcol_processor_spanpruning_outliers_preserved` | Total outlier spans kept as individual spans (when `preserve_outliers: true`) |
 | `otelcol_processor_spanpruning_outliers_correlations_detected` | Total aggregation groups where outliers had correlated attributes |
 | `otelcol_processor_spanpruning_bytes_received` | Total bytes of serialized traces received (when `enable_bytes_metrics: true`) |
-| `otelcol_processor_spanpruning_bytes_processed_input` | Matched traces (entire trace when any span matches OTTL conditions), before pruning (when `enable_bytes_metrics: true`) |
-| `otelcol_processor_spanpruning_bytes_processed_output` | Matched traces (entire trace when any span matches OTTL conditions), after pruning (when `enable_bytes_metrics: true`) |
-| `otelcol_processor_spanpruning_bytes_emitted` | Total bytes of the full batch emitted after pruning (when `enable_bytes_metrics: true`) |
+| `otelcol_processor_spanpruning_bytes_processed_input` | Total bytes of serialized matched traces (entire trace when any span matches OTTL conditions), before pruning (when `enable_bytes_metrics: true`) |
+| `otelcol_processor_spanpruning_bytes_processed_output` | Total bytes of serialized matched traces (entire trace when any span matches OTTL conditions), after pruning (when `enable_bytes_metrics: true`) |
+| `otelcol_processor_spanpruning_bytes_emitted` | Total bytes of serialized traces emitted after pruning (when `enable_bytes_metrics: true`) |
 
-#### Byte metrics semantics
+### Byte metrics semantics
 
 When `enable_bytes_metrics` is enabled, the processor serializes trace data with `ptrace.ProtoMarshaler` on every batch that has matched traces. This adds CPU overhead (full batch plus matched subset, measured twice when pruning runs).
 
