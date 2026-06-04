@@ -124,10 +124,10 @@ func (p *spanPruningProcessor) processTraces(ctx context.Context, td ptrace.Trac
 	traceSpans := p.groupSpansByTraceID(td)
 	matchedTraces, tracesSkipped := p.filterTracesByConditions(ctx, traceSpans)
 
-	var bytesMatched int64
+	var bytesProcessedInput int64
 	if p.enableBytesMetrics {
 		// Measure matched traces before pruning so bytes_matched reflects pre-pruning size.
-		bytesMatched = p.getBytes(ctx, matchedTraces, traceSpans)
+		bytesProcessedInput = p.getBytes(ctx, matchedTraces, traceSpans)
 	}
 
 	// Process each trace independently
@@ -150,8 +150,17 @@ func (p *spanPruningProcessor) processTraces(ctx context.Context, td ptrace.Trac
 	// Measure bytes emitted after pruning to capture the reduction in trace size.
 	if p.enableBytesMetrics {
 		var m ptrace.ProtoMarshaler
-		if bytesMatched > 0 {
-			p.telemetryBuilder.ProcessorSpanpruningBytesProcessed.Add(ctx, bytesMatched)
+		if bytesProcessedInput > 0 {
+			p.telemetryBuilder.ProcessorSpanpruningBytesProcessedInput.Add(ctx, bytesProcessedInput)
+			// Re-group from td so getBytes sees post-prune spans (aggregated summaries, removals).
+			// We cannot use m.TracesSize(td) here: that measures the entire batch (matched and
+			// unmatched traces), which is what bytes_emitted already captures. bytes_processed_output
+			// must reflect only the matched subset after pruning — e.g. if 10 of 100 traces matched,
+			// bytes_processed_output covers those 10 post-prune, while bytes_emitted covers all 100.
+			// The two are equal only when all traces in the batch match the OTTL conditions.
+			postPruneTraceSpans := p.groupSpansByTraceID(td)
+			bytesProcessedOutput := p.getBytes(ctx, matchedTraces, postPruneTraceSpans)
+			p.telemetryBuilder.ProcessorSpanpruningBytesProcessedOutput.Add(ctx, bytesProcessedOutput)
 		}
 		p.telemetryBuilder.ProcessorSpanpruningBytesEmitted.Add(ctx, int64(m.TracesSize(td)))
 	}
