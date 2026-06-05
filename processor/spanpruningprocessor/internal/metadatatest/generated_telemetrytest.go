@@ -68,10 +68,10 @@ func AssertEqualProcessorSpanpruningBytesEmitted(t *testing.T, tt *componenttest
 	metricdatatest.AssertEqual(t, want, got, opts...)
 }
 
-func AssertEqualProcessorSpanpruningBytesProcessed(t *testing.T, tt *componenttest.Telemetry, dps []metricdata.DataPoint[int64], opts ...metricdatatest.Option) {
+func AssertEqualProcessorSpanpruningBytesProcessedInput(t *testing.T, tt *componenttest.Telemetry, dps []metricdata.DataPoint[int64], opts ...metricdatatest.Option) {
 	want := metricdata.Metrics{
-		Name:        "otelcol_processor_spanpruning_bytes_processed",
-		Description: "Total bytes of serialized traces that were processed [Development]",
+		Name:        "otelcol_processor_spanpruning_bytes_processed_input",
+		Description: "Total bytes of traces that matched pruning conditions (entire trace when any span matches), measured before pruning [Development]",
 		Unit:        "By",
 		Data: metricdata.Sum[int64]{
 			Temporality: metricdata.CumulativeTemporality,
@@ -79,7 +79,23 @@ func AssertEqualProcessorSpanpruningBytesProcessed(t *testing.T, tt *componentte
 			DataPoints:  dps,
 		},
 	}
-	got, err := tt.GetMetric("otelcol_processor_spanpruning_bytes_processed")
+	got, err := tt.GetMetric("otelcol_processor_spanpruning_bytes_processed_input")
+	require.NoError(t, err)
+	metricdatatest.AssertEqual(t, want, got, opts...)
+}
+
+func AssertEqualProcessorSpanpruningBytesProcessedOutput(t *testing.T, tt *componenttest.Telemetry, dps []metricdata.DataPoint[int64], opts ...metricdatatest.Option) {
+	want := metricdata.Metrics{
+		Name:        "otelcol_processor_spanpruning_bytes_processed_output",
+		Description: "Total bytes of traces that matched pruning conditions (entire trace when any span matches), measured after pruning [Development]",
+		Unit:        "By",
+		Data: metricdata.Sum[int64]{
+			Temporality: metricdata.CumulativeTemporality,
+			IsMonotonic: true,
+			DataPoints:  dps,
+		},
+	}
+	got, err := tt.GetMetric("otelcol_processor_spanpruning_bytes_processed_output")
 	require.NoError(t, err)
 	metricdatatest.AssertEqual(t, want, got, opts...)
 }

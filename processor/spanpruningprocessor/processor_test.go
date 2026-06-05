@@ -290,6 +290,16 @@ func createTestTraceWithLeafSpans(t *testing.T, numLeafSpans int, spanName strin
 	return td
 }
 
+func bytesCounterSum(t *testing.T, tel *componenttest.Telemetry, metricName string) int64 {
+	t.Helper()
+	m, err := tel.GetMetric(metricName)
+	require.NoError(t, err)
+	sum, ok := m.Data.(metricdata.Sum[int64])
+	require.True(t, ok)
+	require.Len(t, sum.DataPoints, 1)
+	return sum.DataPoints[0].Value
+}
+
 // TestBytesMetrics_Enabled tests that bytes metrics are recorded when enabled
 func TestBytesMetrics_Enabled(t *testing.T) {
 	testTel := componenttest.NewTelemetry()
@@ -322,7 +332,12 @@ func TestBytesMetrics_Enabled(t *testing.T) {
 		metricdatatest.IgnoreValue()) // Just verify metric exists
 
 	// Verify bytes_matched metric was recorded (value > 0)
-	metadatatest.AssertEqualProcessorSpanpruningBytesProcessed(t, testTel,
+	metadatatest.AssertEqualProcessorSpanpruningBytesProcessedInput(t, testTel,
+		[]metricdata.DataPoint[int64]{{}},
+		metricdatatest.IgnoreTimestamp(),
+		metricdatatest.IgnoreValue()) // Just verify metric exists
+
+	metadatatest.AssertEqualProcessorSpanpruningBytesProcessedOutput(t, testTel,
 		[]metricdata.DataPoint[int64]{{}},
 		metricdatatest.IgnoreTimestamp(),
 		metricdatatest.IgnoreValue()) // Just verify metric exists
@@ -356,8 +371,11 @@ func TestBytesMetrics_Disabled(t *testing.T) {
 	assert.Error(t, err, "bytes_emitted metric should not exist when disabled")
 
 	// Verify bytes_matched metric was NOT recorded
-	_, err = testTel.GetMetric("otelcol_processor_spanpruning_bytes_processed")
+	_, err = testTel.GetMetric("otelcol_processor_spanpruning_bytes_processed_input")
 	assert.Error(t, err, "bytes_matched metric should not exist when disabled")
+
+	_, err = testTel.GetMetric("otelcol_processor_spanpruning_bytes_processed_output")
+	assert.Error(t, err, "bytes_processed_output metric should not exist when disabled")
 }
 
 // TestBytesMetrics_MatchedEqualsReceivedWithNoConditions verifies that when no
@@ -379,22 +397,12 @@ func TestBytesMetrics_MatchedEqualsReceivedWithNoConditions(t *testing.T) {
 	err = tp.ConsumeTraces(t.Context(), td)
 	require.NoError(t, err)
 
-	receivedMetric, err := testTel.GetMetric("otelcol_processor_spanpruning_bytes_received")
-	require.NoError(t, err)
-	matchedMetric, err := testTel.GetMetric("otelcol_processor_spanpruning_bytes_processed")
-	require.NoError(t, err)
+	receivedBytes := bytesCounterSum(t, testTel, "otelcol_processor_spanpruning_bytes_received")
+	processedBytes := bytesCounterSum(t, testTel, "otelcol_processor_spanpruning_bytes_processed_input")
 
-	receivedSum, ok := receivedMetric.Data.(metricdata.Sum[int64])
-	require.True(t, ok)
-	require.Len(t, receivedSum.DataPoints, 1)
-
-	matchedSum, ok := matchedMetric.Data.(metricdata.Sum[int64])
-	require.True(t, ok)
-	require.Len(t, matchedSum.DataPoints, 1)
-
-	require.Greater(t, receivedSum.DataPoints[0].Value, int64(0))
-	require.Equal(t, receivedSum.DataPoints[0].Value, matchedSum.DataPoints[0].Value,
-		"bytes_matched should equal bytes_received when no conditions are configured")
+	require.Greater(t, receivedBytes, int64(0))
+	require.Equal(t, receivedBytes, processedBytes,
+		"bytes_processed should equal bytes_received when no conditions are configured")
 }
 
 // TestBytesMetrics_MatchedWithConditions tests bytes_matched tracks only traces
@@ -430,25 +438,14 @@ func TestBytesMetrics_MatchedWithConditions(t *testing.T) {
 	err = tp.ConsumeTraces(t.Context(), td)
 	require.NoError(t, err)
 
-	receivedMetric, err := testTel.GetMetric("otelcol_processor_spanpruning_bytes_received")
-	require.NoError(t, err)
-	matchedMetric, err := testTel.GetMetric("otelcol_processor_spanpruning_bytes_processed")
-	require.NoError(t, err)
-
-	receivedSum, ok := receivedMetric.Data.(metricdata.Sum[int64])
-	require.True(t, ok)
-	require.Len(t, receivedSum.DataPoints, 1)
-
-	matchedSum, ok := matchedMetric.Data.(metricdata.Sum[int64])
-	require.True(t, ok)
-	require.Len(t, matchedSum.DataPoints, 1)
-
-	receivedBytes := receivedSum.DataPoints[0].Value
-	matchedBytes := matchedSum.DataPoints[0].Value
+	receivedBytes := bytesCounterSum(t, testTel, "otelcol_processor_spanpruning_bytes_received")
+	processedBytesInput := bytesCounterSum(t, testTel, "otelcol_processor_spanpruning_bytes_processed_input")
+	bytesProcessedOutput := bytesCounterSum(t, testTel, "otelcol_processor_spanpruning_bytes_processed_output")
 
 	require.Greater(t, receivedBytes, int64(0))
-	require.Greater(t, matchedBytes, int64(0))
-	require.Less(t, matchedBytes, receivedBytes)
+	require.Greater(t, processedBytesInput, int64(0))
+	require.Less(t, processedBytesInput, receivedBytes)
+	require.Greater(t, bytesProcessedOutput, int64(0))
 }
 
 // TestBytesMetrics_MatchedZeroWhenNoTracesMatchConditions verifies that
@@ -471,8 +468,36 @@ func TestBytesMetrics_MatchedZeroWhenNoTracesMatchConditions(t *testing.T) {
 	err = tp.ConsumeTraces(t.Context(), td)
 	require.NoError(t, err)
 
-	_, err = testTel.GetMetric("otelcol_processor_spanpruning_bytes_processed")
+	_, err = testTel.GetMetric("otelcol_processor_spanpruning_bytes_processed_input")
 	assert.Error(t, err, "bytes_matched metric should not be recorded when no traces match conditions")
+
+	_, err = testTel.GetMetric("otelcol_processor_spanpruning_bytes_processed_output")
+	assert.Error(t, err, "bytes_processed_output metric should not be recorded when no traces match conditions")
+}
+
+// TestBytesMetrics_InputEqualsOutputWhenNotPruned verifies that
+// bytes_processed_input equals bytes_processed_output when no aggregation runs.
+func TestBytesMetrics_InputEqualsOutputWhenNotPruned(t *testing.T) {
+	testTel := componenttest.NewTelemetry()
+	defer func() { require.NoError(t, testTel.Shutdown(t.Context())) }()
+
+	factory := NewFactory()
+	cfg := factory.CreateDefaultConfig().(*Config)
+	cfg.MinSpansToAggregate = 100 // too high to aggregate; trace still matches conditions
+	cfg.EnableBytesMetrics = true
+
+	tp, err := factory.CreateTraces(t.Context(), metadatatest.NewSettings(testTel), cfg, consumertest.NewNop())
+	require.NoError(t, err)
+
+	td := createTestTraceWithLeafSpans(t, 3, "SELECT", map[string]string{"db.operation": "select"})
+	err = tp.ConsumeTraces(t.Context(), td)
+	require.NoError(t, err)
+
+	inputBytes := bytesCounterSum(t, testTel, "otelcol_processor_spanpruning_bytes_processed_input")
+	outputBytes := bytesCounterSum(t, testTel, "otelcol_processor_spanpruning_bytes_processed_output")
+
+	require.Equal(t, inputBytes, outputBytes,
+		"bytes_processed_output should equal bytes_processed_input when no pruning occurs")
 }
 
 // TestOutlierMetrics_IQR tests that outlier metrics are recorded correctly with IQR method

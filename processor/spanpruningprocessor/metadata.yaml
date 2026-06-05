@@ -31,9 +31,16 @@ telemetry:
       stability: { level: development }
       sum: { value_type: int, monotonic: true }
 
-    processor_spanpruning_bytes_processed:
+    processor_spanpruning_bytes_processed_input:
       enabled: false
-      description: Total bytes of serialized traces that were processed
+      description: Total bytes of traces that matched pruning conditions (entire trace when any span matches), measured before pruning
+      unit: "By"
+      stability: { level: development }
+      sum: { value_type: int, monotonic: true }
+
+    processor_spanpruning_bytes_processed_output:
+      enabled: false
+      description: Total bytes of traces that matched pruning conditions (entire trace when any span matches), measured after pruning
       unit: "By"
       stability: { level: development }
       sum: { value_type: int, monotonic: true }
