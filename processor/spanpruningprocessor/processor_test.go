@@ -4,6 +4,7 @@
 package spanpruningprocessor
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -3234,4 +3235,265 @@ func createTestTraceWithParentKeyCollision(t *testing.T) ptrace.Traces {
 	}
 
 	return td
+}
+
+// TestOutlierReparentingUnderMultiLevelAggregation verifies that when a
+// parent span is itself aggregated away, preserved outlier spans are
+// re-parented to the parent's replacement summary — not left pointing at
+// a deleted span ID.
+//
+// Trace structure before pruning:
+//
+//	middleware
+//	├── handler (H1)  ← will be deleted
+//	│   ├── SELECT 5–10ms ×6   (normal)
+//	│   ├── SELECT 500ms       (outlier)
+//	│   └── SELECT 600ms       (outlier)
+//	├── handler (H2)  ← will be deleted
+//	│   └── SELECT 5–10ms ×6   (normal)
+//	└── handler (H3)  ← will be deleted
+//	    └── SELECT 5–10ms ×6   (normal)
+//
+// Expected structure after pruning:
+//
+//	middleware
+//	└── handler-summary (HS)
+//	    ├── SELECT 500ms       (re-parented: was H1, now HS)
+//	    ├── SELECT 600ms       (re-parented: was H1, now HS)
+//	    └── SELECT-summary     (aggregates 18 normal spans)
+func TestOutlierReparentingUnderMultiLevelAggregation(t *testing.T) {
+	factory := NewFactory()
+	cfg := factory.CreateDefaultConfig().(*Config)
+	cfg.MinSpansToAggregate = 5
+	cfg.MaxParentDepth = -1
+	cfg.EnableOutlierAnalysis = true
+	cfg.OutlierAnalysis = OutlierAnalysisConfig{
+		Method:                         OutlierMethodIQR,
+		IQRMultiplier:                  1.5,
+		MinGroupSize:                   7,
+		PreserveOutliers:               true,
+		MaxPreservedOutliers:           0, // preserve all
+		CorrelationMinOccurrence:       0.5,
+		CorrelationMaxNormalOccurrence: 0.5,
+		MaxCorrelatedAttributes:        5,
+	}
+
+	tp, err := factory.CreateTraces(t.Context(), processortest.NewNopSettings(metadata.Type), cfg, consumertest.NewNop())
+	require.NoError(t, err)
+
+	td, h1ID := createTraceForOutlierReparenting(t)
+
+	// Print before state.
+	fmt.Print(printTraceTree("BEFORE", td))
+
+	err = tp.ConsumeTraces(t.Context(), td)
+	require.NoError(t, err)
+
+	// Print after state.
+	fmt.Print(printTraceTree("AFTER", td))
+
+	// Index all surviving spans by ID.
+	remainingByID := make(map[pcommon.SpanID]ptrace.Span)
+	rss := td.ResourceSpans()
+	for i := 0; i < rss.Len(); i++ {
+		for j := 0; j < rss.At(i).ScopeSpans().Len(); j++ {
+			spans := rss.At(i).ScopeSpans().At(j).Spans()
+			for k := 0; k < spans.Len(); k++ {
+				span := spans.At(k)
+				remainingByID[span.SpanID()] = span
+			}
+		}
+	}
+
+	// H1 must be gone — it was aggregated into the handler summary.
+	_, h1Exists := remainingByID[h1ID]
+	assert.False(t, h1Exists, "original handler H1 should have been aggregated away")
+
+	// Find the handler summary and the preserved outlier spans.
+	var handlerSummary ptrace.Span
+	var outlierSpans []ptrace.Span
+	for _, span := range remainingByID {
+		if v, ok := span.Attributes().Get("aggregation.is_summary"); ok && v.Bool() && span.Name() == "handler" {
+			handlerSummary = span
+		}
+		if v, ok := span.Attributes().Get("aggregation.is_preserved_outlier"); ok && v.Bool() {
+			outlierSpans = append(outlierSpans, span)
+		}
+	}
+
+	require.False(t, handlerSummary == (ptrace.Span{}), "handler summary span must exist")
+	require.Len(t, outlierSpans, 2, "both outlier SELECT spans should be preserved")
+
+	// Core assertion: outliers are re-parented to the handler summary, not to
+	// the now-deleted H1.
+	for _, outlier := range outlierSpans {
+		assert.Equal(t, handlerSummary.SpanID(), outlier.ParentSpanID(),
+			"outlier %s should be re-parented to handler-summary %s",
+			outlier.SpanID(), handlerSummary.SpanID())
+		assert.NotEqual(t, h1ID, outlier.ParentSpanID(),
+			"outlier should no longer reference deleted H1 %s", h1ID)
+	}
+
+	// No span should reference a parent that no longer exists.
+	for _, span := range remainingByID {
+		parentID := span.ParentSpanID()
+		if parentID.IsEmpty() {
+			continue
+		}
+		_, parentExists := remainingByID[parentID]
+		assert.True(t, parentExists,
+			"span %s (name=%q) has dangling parent %s", span.SpanID(), span.Name(), parentID)
+	}
+}
+
+// printTraceTree renders a labelled tree of the spans in td for test logging.
+// Each line shows: <indent><name> [<shortID>] <annotations>
+func printTraceTree(label string, td ptrace.Traces) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "\n=== %s ===\n", label)
+
+	// Collect all spans.
+	type entry struct {
+		span     ptrace.Span
+		parentID pcommon.SpanID
+	}
+	var all []entry
+	rss := td.ResourceSpans()
+	for i := 0; i < rss.Len(); i++ {
+		for j := 0; j < rss.At(i).ScopeSpans().Len(); j++ {
+			spans := rss.At(i).ScopeSpans().At(j).Spans()
+			for k := 0; k < spans.Len(); k++ {
+				s := spans.At(k)
+				all = append(all, entry{span: s, parentID: s.ParentSpanID()})
+			}
+		}
+	}
+
+	// Index by span ID.
+	byID := make(map[pcommon.SpanID]ptrace.Span, len(all))
+	for _, e := range all {
+		byID[e.span.SpanID()] = e.span
+	}
+
+	// Build children map.
+	children := make(map[pcommon.SpanID][]pcommon.SpanID)
+	var roots []pcommon.SpanID
+	for _, e := range all {
+		if e.parentID.IsEmpty() {
+			roots = append(roots, e.span.SpanID())
+		} else {
+			children[e.parentID] = append(children[e.parentID], e.span.SpanID())
+		}
+	}
+
+	// Annotate a span with its key attributes.
+	annotate := func(s ptrace.Span) string {
+		var parts []string
+		durMs := float64(s.EndTimestamp()-s.StartTimestamp()) / 1e6
+		parts = append(parts, fmt.Sprintf("%.0fms", durMs))
+		if v, ok := s.Attributes().Get("aggregation.is_summary"); ok && v.Bool() {
+			if c, ok := s.Attributes().Get("aggregation.span_count"); ok {
+				parts = append(parts, fmt.Sprintf("SUMMARY(n=%d)", c.Int()))
+			}
+		}
+		if v, ok := s.Attributes().Get("aggregation.is_preserved_outlier"); ok && v.Bool() {
+			parts = append(parts, "OUTLIER")
+			if ref, ok := s.Attributes().Get("aggregation.summary_span_id"); ok {
+				parts = append(parts, fmt.Sprintf("summary_ref=%s", ref.Str()[:8]))
+			}
+		}
+		if v, ok := s.Attributes().Get("cache_hit"); ok {
+			parts = append(parts, fmt.Sprintf("cache_hit=%s", v.Str()))
+		}
+		return strings.Join(parts, " ")
+	}
+
+	// Recursive printer.
+	var print func(id pcommon.SpanID, prefix, childPrefix string)
+	print = func(id pcommon.SpanID, prefix, childPrefix string) {
+		s := byID[id]
+		shortID := id.String()[:8]
+		fmt.Fprintf(&sb, "%s%s [%s] %s\n", prefix, s.Name(), shortID, annotate(s))
+		kids := children[id]
+		for i, kid := range kids {
+			if i < len(kids)-1 {
+				print(kid, childPrefix+"├── ", childPrefix+"│   ")
+			} else {
+				print(kid, childPrefix+"└── ", childPrefix+"    ")
+			}
+		}
+	}
+
+	for _, r := range roots {
+		print(r, "", "")
+	}
+	return sb.String()
+}
+
+// createTraceForOutlierReparenting builds a three-handler trace where the two
+// slow SELECT spans under H1 will be detected as outliers and the three
+// handler spans will be eligible for parent aggregation. Returns the trace and
+// H1's SpanID so callers can assert it was deleted.
+func createTraceForOutlierReparenting(t *testing.T) (ptrace.Traces, pcommon.SpanID) {
+	t.Helper()
+	td := ptrace.NewTraces()
+	rs := td.ResourceSpans().AppendEmpty()
+	ss := rs.ScopeSpans().AppendEmpty()
+
+	traceID := pcommon.TraceID([16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16})
+	mwID := pcommon.SpanID([8]byte{1, 0, 0, 0, 0, 0, 0, 0})
+	h1ID := pcommon.SpanID([8]byte{2, 0, 0, 0, 0, 0, 0, 0})
+	h2ID := pcommon.SpanID([8]byte{3, 0, 0, 0, 0, 0, 0, 0})
+	h3ID := pcommon.SpanID([8]byte{4, 0, 0, 0, 0, 0, 0, 0})
+
+	baseNs := int64(1_000_000_000)
+	ms := int64(1_000_000)
+
+	nextID := func() pcommon.SpanID {
+		var id [8]byte
+		id[0] = byte(ss.Spans().Len() + 10)
+		return pcommon.SpanID(id)
+	}
+
+	addSpan := func(id, parentID pcommon.SpanID, name string, durationMs int64) ptrace.Span {
+		s := ss.Spans().AppendEmpty()
+		s.SetTraceID(traceID)
+		s.SetSpanID(id)
+		s.SetParentSpanID(parentID)
+		s.SetName(name)
+		s.SetStartTimestamp(pcommon.Timestamp(baseNs))
+		s.SetEndTimestamp(pcommon.Timestamp(baseNs + durationMs*ms))
+		return s
+	}
+
+	// Middleware root span.
+	addSpan(mwID, pcommon.SpanID{}, "middleware", 700)
+
+	// Three handler instances — same name so they form one parent group.
+	addSpan(h1ID, mwID, "handler", 600)
+	addSpan(h2ID, mwID, "handler", 12)
+	addSpan(h3ID, mwID, "handler", 12)
+
+	// H1: 6 normal SELECT spans + 2 outlier SELECT spans.
+	// Outliers are ~50–75× slower and carry cache_hit=false for correlation.
+	for _, dur := range []int64{5, 6, 7, 8, 9, 10} {
+		s := addSpan(nextID(), h1ID, "SELECT", dur)
+		s.Attributes().PutStr("cache_hit", "true")
+	}
+	outlier1 := addSpan(nextID(), h1ID, "SELECT", 500)
+	outlier1.Attributes().PutStr("cache_hit", "false")
+	outlier2 := addSpan(nextID(), h1ID, "SELECT", 600)
+	outlier2.Attributes().PutStr("cache_hit", "false")
+
+	// H2 and H3: 6 normal SELECT spans each — enough that the combined leaf
+	// group (18 normal + 2 outlier) easily exceeds MinSpansToAggregate and
+	// OutlierAnalysis.MinGroupSize.
+	for _, parentID := range []pcommon.SpanID{h2ID, h3ID} {
+		for _, dur := range []int64{5, 6, 7, 8, 9, 10} {
+			s := addSpan(nextID(), parentID, "SELECT", dur)
+			s.Attributes().PutStr("cache_hit", "true")
+		}
+	}
+
+	return td, h1ID
 }
