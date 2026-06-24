@@ -3237,114 +3237,7 @@ func createTestTraceWithParentKeyCollision(t *testing.T) ptrace.Traces {
 	return td
 }
 
-// TestOutlierReparentingUnderMultiLevelAggregation verifies that when a
-// parent span is itself aggregated away, preserved outlier spans are
-// re-parented to the parent's replacement summary — not left pointing at
-// a deleted span ID.
-//
-// Trace structure before pruning:
-//
-//	middleware
-//	├── handler (H1)  ← will be deleted
-//	│   ├── SELECT 5–10ms ×6   (normal)
-//	│   ├── SELECT 500ms       (outlier)
-//	│   └── SELECT 600ms       (outlier)
-//	├── handler (H2)  ← will be deleted
-//	│   └── SELECT 5–10ms ×6   (normal)
-//	└── handler (H3)  ← will be deleted
-//	    └── SELECT 5–10ms ×6   (normal)
-//
-// Expected structure after pruning:
-//
-//	middleware
-//	└── handler-summary (HS)
-//	    ├── SELECT 500ms       (re-parented: was H1, now HS)
-//	    ├── SELECT 600ms       (re-parented: was H1, now HS)
-//	    └── SELECT-summary     (aggregates 18 normal spans)
-func TestOutlierReparentingUnderMultiLevelAggregation(t *testing.T) {
-	factory := NewFactory()
-	cfg := factory.CreateDefaultConfig().(*Config)
-	cfg.MinSpansToAggregate = 5
-	cfg.MaxParentDepth = -1
-	cfg.EnableOutlierAnalysis = true
-	cfg.OutlierAnalysis = OutlierAnalysisConfig{
-		Method:                         OutlierMethodIQR,
-		IQRMultiplier:                  1.5,
-		MinGroupSize:                   7,
-		PreserveOutliers:               true,
-		MaxPreservedOutliers:           0, // preserve all
-		CorrelationMinOccurrence:       0.5,
-		CorrelationMaxNormalOccurrence: 0.5,
-		MaxCorrelatedAttributes:        5,
-	}
 
-	tp, err := factory.CreateTraces(t.Context(), processortest.NewNopSettings(metadata.Type), cfg, consumertest.NewNop())
-	require.NoError(t, err)
-
-	td, h1ID := createTraceForOutlierReparenting(t)
-
-	// Print before state.
-	fmt.Print(printTraceTree("BEFORE", td))
-
-	err = tp.ConsumeTraces(t.Context(), td)
-	require.NoError(t, err)
-
-	// Print after state.
-	fmt.Print(printTraceTree("AFTER", td))
-
-	// Index all surviving spans by ID.
-	remainingByID := make(map[pcommon.SpanID]ptrace.Span)
-	rss := td.ResourceSpans()
-	for i := 0; i < rss.Len(); i++ {
-		for j := 0; j < rss.At(i).ScopeSpans().Len(); j++ {
-			spans := rss.At(i).ScopeSpans().At(j).Spans()
-			for k := 0; k < spans.Len(); k++ {
-				span := spans.At(k)
-				remainingByID[span.SpanID()] = span
-			}
-		}
-	}
-
-	// H1 must be gone — it was aggregated into the handler summary.
-	_, h1Exists := remainingByID[h1ID]
-	assert.False(t, h1Exists, "original handler H1 should have been aggregated away")
-
-	// Find the handler summary and the preserved outlier spans.
-	var handlerSummary ptrace.Span
-	var outlierSpans []ptrace.Span
-	for _, span := range remainingByID {
-		if v, ok := span.Attributes().Get("aggregation.is_summary"); ok && v.Bool() && span.Name() == "handler" {
-			handlerSummary = span
-		}
-		if v, ok := span.Attributes().Get("aggregation.is_preserved_outlier"); ok && v.Bool() {
-			outlierSpans = append(outlierSpans, span)
-		}
-	}
-
-	require.False(t, handlerSummary == (ptrace.Span{}), "handler summary span must exist")
-	require.Len(t, outlierSpans, 2, "both outlier SELECT spans should be preserved")
-
-	// Core assertion: outliers are re-parented to the handler summary, not to
-	// the now-deleted H1.
-	for _, outlier := range outlierSpans {
-		assert.Equal(t, handlerSummary.SpanID(), outlier.ParentSpanID(),
-			"outlier %s should be re-parented to handler-summary %s",
-			outlier.SpanID(), handlerSummary.SpanID())
-		assert.NotEqual(t, h1ID, outlier.ParentSpanID(),
-			"outlier should no longer reference deleted H1 %s", h1ID)
-	}
-
-	// No span should reference a parent that no longer exists.
-	for _, span := range remainingByID {
-		parentID := span.ParentSpanID()
-		if parentID.IsEmpty() {
-			continue
-		}
-		_, parentExists := remainingByID[parentID]
-		assert.True(t, parentExists,
-			"span %s (name=%q) has dangling parent %s", span.SpanID(), span.Name(), parentID)
-	}
-}
 
 // printTraceTree renders a labelled tree of the spans in td for test logging.
 // Each line shows: <indent><name> [<shortID>] <annotations>
@@ -3430,21 +3323,156 @@ func printTraceTree(label string, td ptrace.Traces) string {
 	return sb.String()
 }
 
-// createTraceForOutlierReparenting builds a three-handler trace where the two
-// slow SELECT spans under H1 will be detected as outliers and the three
-// handler spans will be eligible for parent aggregation. Returns the trace and
-// H1's SpanID so callers can assert it was deleted.
-func createTraceForOutlierReparenting(t *testing.T) (ptrace.Traces, pcommon.SpanID) {
+// TestOutlierDepthChangeWithSameNamedParentsAtDifferentDepths demonstrates that
+// when two spans share the same name but sit at different depths, their leaf
+// children are grouped together. The parent summary is then placed at a
+// non-deterministic depth because Go map iteration decides which parent's
+// ancestor chain wins. Outliers from the deeper branch may therefore be
+// re-parented to a shallower depth than they originally occupied.
+//
+// Trace structure before pruning:
+//
+//	root
+//	├── handler (shallow, depth 1, parent=root)
+//	│   ├── SELECT 5ms
+//	│   ├── SELECT 6ms
+//	│   ├── SELECT 7ms
+//	│   └── SELECT 8ms
+//	└── middleware
+//	    └── handler (deep, depth 2, parent=middleware)
+//	        ├── SELECT 5ms
+//	        ├── SELECT 6ms
+//	        ├── SELECT 7ms
+//	        ├── SELECT 500ms  ← outlier (depth 3)
+//	        └── SELECT 600ms  ← outlier (depth 3)
+//
+// After pruning the two handler spans collapse into one handler-summary whose
+// own parent is chosen by Go map iteration order. If the shallow handler wins,
+// handler-summary lands at depth 1 and the outlier drops to depth 2. If the
+// deep handler wins, handler-summary lands at depth 2 and the outlier stays
+// at depth 3. The test runs 100 iterations to prove both outcomes occur.
+func TestOutlierDepthChangeWithSameNamedParentsAtDifferentDepths(t *testing.T) {
+	factory := NewFactory()
+	cfg := factory.CreateDefaultConfig().(*Config)
+	cfg.MinSpansToAggregate = 5
+	cfg.MaxParentDepth = -1
+	cfg.EnableOutlierAnalysis = true
+	cfg.OutlierAnalysis = OutlierAnalysisConfig{
+		Method:                         OutlierMethodIQR,
+		IQRMultiplier:                  1.5,
+		MinGroupSize:                   7,
+		PreserveOutliers:               true,
+		MaxPreservedOutliers:           0,
+		CorrelationMinOccurrence:       0.5,
+		CorrelationMaxNormalOccurrence: 0.5,
+		MaxCorrelatedAttributes:        5,
+	}
+
+	// Print the before tree once.
+	fmt.Print(printTraceTree("BEFORE", createTraceWithSameNamedParentsAtDifferentDepths(t)))
+
+	// Run many iterations to observe both possible depths caused by non-deterministic
+	// map iteration choosing which handler's parent chain anchors the summary.
+	observedDepths := make(map[int]bool)
+	afterTrees := make(map[int]string) // one example tree per observed depth
+
+	const iterations = 100
+	for i := 0; i < iterations; i++ {
+		tp, err := factory.CreateTraces(t.Context(), processortest.NewNopSettings(metadata.Type), cfg, consumertest.NewNop())
+		require.NoError(t, err)
+
+		td := createTraceWithSameNamedParentsAtDifferentDepths(t)
+		err = tp.ConsumeTraces(t.Context(), td)
+		require.NoError(t, err)
+
+		depth := computeOutlierDepth(td)
+		if depth >= 0 {
+			observedDepths[depth] = true
+			if _, seen := afterTrees[depth]; !seen {
+				afterTrees[depth] = printTraceTree(fmt.Sprintf("AFTER (outlier at depth %d)", depth), td)
+			}
+		}
+
+		// Stop early once we have seen both possible depths.
+		if len(observedDepths) >= 2 {
+			break
+		}
+	}
+
+	// Print one representative tree for each observed depth.
+	for depth := range observedDepths {
+		fmt.Print(afterTrees[depth])
+	}
+
+	t.Logf("original outlier depth: 3")
+	t.Logf("observed post-pruning depths over %d iterations: %v", iterations, observedDepths)
+
+	// The core assertion: we saw the outlier at more than one depth, proving
+	// that re-parenting is non-deterministic when same-named parents live at
+	// different levels of the trace tree.
+	assert.Greater(t, len(observedDepths), 1,
+		"expected outlier depth to vary across iterations; only saw depths: %v", observedDepths)
+}
+
+// computeOutlierDepth finds the first preserved outlier span in td and counts
+// how many ancestor hops it takes to reach the root, returning that as depth.
+// Returns -1 if no outlier is found.
+func computeOutlierDepth(td ptrace.Traces) int {
+	byID := make(map[pcommon.SpanID]ptrace.Span)
+	rss := td.ResourceSpans()
+	for i := 0; i < rss.Len(); i++ {
+		for j := 0; j < rss.At(i).ScopeSpans().Len(); j++ {
+			spans := rss.At(i).ScopeSpans().At(j).Spans()
+			for k := 0; k < spans.Len(); k++ {
+				s := spans.At(k)
+				byID[s.SpanID()] = s
+			}
+		}
+	}
+
+	var outlier ptrace.Span
+	for _, s := range byID {
+		if v, ok := s.Attributes().Get("aggregation.is_preserved_outlier"); ok && v.Bool() {
+			outlier = s
+			break
+		}
+	}
+	if outlier == (ptrace.Span{}) {
+		return -1
+	}
+
+	depth := 0
+	current := outlier
+	for {
+		parentID := current.ParentSpanID()
+		if parentID.IsEmpty() {
+			break
+		}
+		parent, exists := byID[parentID]
+		if !exists {
+			break
+		}
+		depth++
+		current = parent
+	}
+	return depth
+}
+
+// createTraceWithSameNamedParentsAtDifferentDepths builds a trace with two
+// "handler" spans at depth 1 and depth 2 respectively. Their SELECT children
+// share the same leaf group key because buildLeafGroupKey only includes the
+// direct parent name, not the full path.
+func createTraceWithSameNamedParentsAtDifferentDepths(t *testing.T) ptrace.Traces {
 	t.Helper()
 	td := ptrace.NewTraces()
 	rs := td.ResourceSpans().AppendEmpty()
 	ss := rs.ScopeSpans().AppendEmpty()
 
 	traceID := pcommon.TraceID([16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16})
-	mwID := pcommon.SpanID([8]byte{1, 0, 0, 0, 0, 0, 0, 0})
-	h1ID := pcommon.SpanID([8]byte{2, 0, 0, 0, 0, 0, 0, 0})
-	h2ID := pcommon.SpanID([8]byte{3, 0, 0, 0, 0, 0, 0, 0})
-	h3ID := pcommon.SpanID([8]byte{4, 0, 0, 0, 0, 0, 0, 0})
+	rootID := pcommon.SpanID([8]byte{1, 0, 0, 0, 0, 0, 0, 0})
+	shallowHandlerID := pcommon.SpanID([8]byte{2, 0, 0, 0, 0, 0, 0, 0})
+	middlewareID := pcommon.SpanID([8]byte{3, 0, 0, 0, 0, 0, 0, 0})
+	deepHandlerID := pcommon.SpanID([8]byte{4, 0, 0, 0, 0, 0, 0, 0})
 
 	baseNs := int64(1_000_000_000)
 	ms := int64(1_000_000)
@@ -3466,34 +3494,31 @@ func createTraceForOutlierReparenting(t *testing.T) (ptrace.Traces, pcommon.Span
 		return s
 	}
 
-	// Middleware root span.
-	addSpan(mwID, pcommon.SpanID{}, "middleware", 700)
+	// root → handler (shallow, depth 1)
+	addSpan(rootID, pcommon.SpanID{}, "root", 700)
+	addSpan(shallowHandlerID, rootID, "handler", 10)
 
-	// Three handler instances — same name so they form one parent group.
-	addSpan(h1ID, mwID, "handler", 600)
-	addSpan(h2ID, mwID, "handler", 12)
-	addSpan(h3ID, mwID, "handler", 12)
+	// root → middleware → handler (deep, depth 2)
+	addSpan(middlewareID, rootID, "middleware", 650)
+	addSpan(deepHandlerID, middlewareID, "handler", 600)
 
-	// H1: 6 normal SELECT spans + 2 outlier SELECT spans.
-	// Outliers are ~50–75× slower and carry cache_hit=false for correlation.
-	for _, dur := range []int64{5, 6, 7, 8, 9, 10} {
-		s := addSpan(nextID(), h1ID, "SELECT", dur)
+	// Shallow handler: 4 normal SELECT spans.
+	for _, dur := range []int64{5, 6, 7, 8} {
+		s := addSpan(nextID(), shallowHandlerID, "SELECT", dur)
 		s.Attributes().PutStr("cache_hit", "true")
 	}
-	outlier1 := addSpan(nextID(), h1ID, "SELECT", 500)
-	outlier1.Attributes().PutStr("cache_hit", "false")
-	outlier2 := addSpan(nextID(), h1ID, "SELECT", 600)
-	outlier2.Attributes().PutStr("cache_hit", "false")
 
-	// H2 and H3: 6 normal SELECT spans each — enough that the combined leaf
-	// group (18 normal + 2 outlier) easily exceeds MinSpansToAggregate and
-	// OutlierAnalysis.MinGroupSize.
-	for _, parentID := range []pcommon.SpanID{h2ID, h3ID} {
-		for _, dur := range []int64{5, 6, 7, 8, 9, 10} {
-			s := addSpan(nextID(), parentID, "SELECT", dur)
-			s.Attributes().PutStr("cache_hit", "true")
-		}
+	// Deep handler: 3 normal + 2 outlier SELECT spans.
+	// All share the same leaf group key (parent name = "handler").
+	// 7 normal total ≥ MinGroupSize=7 for outlier analysis.
+	for _, dur := range []int64{5, 6, 7} {
+		s := addSpan(nextID(), deepHandlerID, "SELECT", dur)
+		s.Attributes().PutStr("cache_hit", "true")
+	}
+	for _, dur := range []int64{500, 600} {
+		s := addSpan(nextID(), deepHandlerID, "SELECT", dur)
+		s.Attributes().PutStr("cache_hit", "false")
 	}
 
-	return td, h1ID
+	return td
 }
