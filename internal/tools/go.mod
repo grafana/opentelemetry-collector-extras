@@ -1,6 +1,6 @@
 module github.com/grafana/opentelemetry-collector-extras/internal/tools
 
-go 1.25.0
+go 1.26.0
 
 tool go.opentelemetry.io/collector/cmd/mdatagen
 
@@ -27,11 +27,11 @@ require (
 	go.opentelemetry.io/collector/featuregate v1.52.0 // indirect
 	go.opentelemetry.io/collector/filter v0.146.1 // indirect
 	go.opentelemetry.io/collector/pdata v1.52.0 // indirect
-	go.opentelemetry.io/otel v1.41.0 // indirect
-	go.opentelemetry.io/otel/metric v1.41.0 // indirect
-	go.opentelemetry.io/otel/trace v1.41.0 // indirect
+	go.opentelemetry.io/otel v1.47.0 // indirect
+	go.opentelemetry.io/otel/metric v1.47.0 // indirect
+	go.opentelemetry.io/otel/trace v1.47.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.1 // indirect
-	go.yaml.in/yaml/v3 v3.0.4 // indirect
+	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/text v0.34.0 // indirect
 )
